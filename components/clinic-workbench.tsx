@@ -13,11 +13,28 @@ type CalendarRoom = { roomId: string; roomName: string; roomCode: string; slots:
 type CalendarData = { date: string; timeSlots: string[]; rooms: CalendarRoom[] };
 type DoctorScheduleSlot = { time: string; status: "AVAILABLE" | "BOOKED" | "CLOSED"; appointmentNo?: string; patientName?: string; roomId?: string };
 type DoctorSchedule = { doctorId: string; doctorName: string; slots: DoctorScheduleSlot[] };
+type RoomScheduleDay = { date: string; slots: string[] };
+type DoctorExceptionType = "DAY_OFF" | "PARTIAL_OFF" | "UNAVAILABLE";
+type DoctorScheduleException = {
+  id: string;
+  doctorId: string;
+  date: string;
+  startTime: string | null;
+  endTime: string | null;
+  type: DoctorExceptionType;
+  reason?: string | null;
+};
+type ClinicSettings = { id: string; name: string; code: string; timezone: string; openHour: number; closeHour: number };
 type Log = { id: number; time: string; method: string; path: string; ok: boolean; message: string };
 type TreatmentOption = { entitlementId: string; name: string; type: "SERVICE" | "COURSE"; totalUnits: number; remainingUnits: number };
 type TreatmentOptionGroup = { key: string; sourceType: string; sourceName: string; items: TreatmentOption[] };
 
-const timeSlots = ["09:00", "10:00", "11:00", "13:00", "14:00", "15:00", "16:00"];
+function buildHourSlots(openHour: number, closeHour: number) {
+  return Array.from(
+    { length: Math.max(0, closeHour - openHour) },
+    (_, index) => `${String(openHour + index).padStart(2, "0")}:00`,
+  );
+}
 
 function localDate() {
   const now = new Date();
@@ -30,6 +47,27 @@ function doctorName(doctor: Doctor) {
 
 function patientName(patient: Patient) {
   return `${patient.prefix ?? ""}${patient.firstName} ${patient.lastName}`.trim();
+}
+
+function timeToMinutes(value: string) {
+  const [hour, minute] = value.split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+function exceptionBlocksSlot(exception: DoctorScheduleException, slotTime: string) {
+  if (!exception.startTime || !exception.endTime) return true;
+  const slotStart = timeToMinutes(slotTime);
+  return slotStart < timeToMinutes(exception.endTime) && timeToMinutes(exception.startTime) < slotStart + 60;
+}
+
+const exceptionLabels: Record<DoctorExceptionType, string> = {
+  DAY_OFF: "หยุดทั้งวัน",
+  PARTIAL_OFF: "งดตรวจบางช่วง",
+  UNAVAILABLE: "ไม่พร้อมตรวจ",
+};
+
+function requestDoctorExceptions(doctorId: string, token: string) {
+  return apiRequest<DoctorScheduleException[]>(`/doctors/${doctorId}/schedule-exceptions`, { token });
 }
 
 export default function ClinicWorkbench() {
@@ -45,8 +83,19 @@ export default function ClinicWorkbench() {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [selectedSlots, setSelectedSlots] = useState<string[]>(["09:00", "10:00", "11:00"]);
+  const [roomScheduleSlots, setRoomScheduleSlots] = useState<string[]>([]);
+  const [roomDraftSlots, setRoomDraftSlots] = useState<string[]>([]);
+  const [clinicSettings, setClinicSettings] = useState<ClinicSettings | null>(null);
+  const [clinicHoursDraft, setClinicHoursDraft] = useState({ openHour: 9, closeHour: 18 });
   const [scheduleDoctorId, setScheduleDoctorId] = useState("");
   const [scheduleRoomId, setScheduleRoomId] = useState("");
+  const [doctorExceptions, setDoctorExceptions] = useState<DoctorScheduleException[]>([]);
+  const [exceptionDraft, setExceptionDraft] = useState<{
+    type: DoctorExceptionType;
+    startTime: string;
+    endTime: string;
+    reason: string;
+  }>({ type: "DAY_OFF", startTime: "09:00", endTime: "10:00", reason: "" });
   const [appointmentDraft, setAppointmentDraft] = useState({ patientId: "", doctorId: "", roomId: "", startTime: "09:00", chiefComplaint: "ตรวจอาการทั่วไป" });
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [doctorSchedules, setDoctorSchedules] = useState<DoctorSchedule[]>([]);
@@ -62,18 +111,35 @@ export default function ClinicWorkbench() {
     if (!accessToken) return;
     setBusy("refresh");
     try {
-      const [roomResult, doctorResult, patientResult, appointmentResult, calendarResult] = await Promise.all([
+      const [roomResult, doctorResult, patientResult, appointmentResult, calendarResult, settingsResult] = await Promise.all([
         apiRequest<Room[]>("/rooms?limit=100", { token: accessToken }),
         apiRequest<Doctor[]>("/doctors?limit=100", { token: accessToken }),
         apiRequest<Patient[]>("/patients?limit=100", { token: accessToken }),
         apiRequest<Appointment[]>(`/appointments?date=${targetDate}&limit=100`, { token: accessToken }),
         apiRequest<CalendarData>(`/appointments/calendar?date=${targetDate}`, { token: accessToken }),
+        apiRequest<ClinicSettings>("/clinic/settings", { token: accessToken }),
       ]);
       setRooms(roomResult.data);
       setDoctors(doctorResult.data);
       setPatients(patientResult.data);
       setAppointments(appointmentResult.data);
       setCalendar(calendarResult.data);
+      setClinicSettings(settingsResult.data);
+      setClinicHoursDraft({ openHour: settingsResult.data.openHour, closeHour: settingsResult.data.closeHour });
+      const configuredSlots = buildHourSlots(settingsResult.data.openHour, settingsResult.data.closeHour);
+      const configuredEndSlots = [
+        ...configuredSlots.slice(1),
+        `${String(settingsResult.data.closeHour).padStart(2, "0")}:00`,
+      ];
+      setAppointmentDraft((current) => ({
+        ...current,
+        startTime: configuredSlots.includes(current.startTime) ? current.startTime : (configuredSlots[0] ?? ""),
+      }));
+      setExceptionDraft((current) => ({
+        ...current,
+        startTime: configuredSlots.includes(current.startTime) ? current.startTime : (configuredSlots[0] ?? ""),
+        endTime: configuredEndSlots.includes(current.endTime) ? current.endTime : (configuredEndSlots[0] ?? ""),
+      }));
       addLog("GET", "dashboard resources", true, "โหลดข้อมูลล่าสุดแล้ว");
     } catch (error) {
       const apiError = error as ApiClientError;
@@ -102,8 +168,35 @@ export default function ClinicWorkbench() {
   }, []);
 
   const availableCount = useMemo(() => calendar?.rooms.reduce((total, room) => total + Object.values(room.slots).filter((slot) => slot.status === "AVAILABLE").length, 0) ?? 0, [calendar]);
+  const timeSlots = useMemo(
+    () => buildHourSlots(clinicSettings?.openHour ?? 9, clinicSettings?.closeHour ?? 18),
+    [clinicSettings?.closeHour, clinicSettings?.openHour],
+  );
+  const exceptionEndSlots = useMemo(
+    () => [
+      ...timeSlots.slice(1),
+      `${String(clinicSettings?.closeHour ?? 18).padStart(2, "0")}:00`,
+    ],
+    [clinicSettings?.closeHour, timeSlots],
+  );
+  const validExceptionEndSlots = useMemo(
+    () => exceptionEndSlots.filter((slot) => timeToMinutes(slot) > timeToMinutes(exceptionDraft.startTime)),
+    [exceptionDraft.startTime, exceptionEndSlots],
+  );
   const activeScheduleDoctorId = scheduleDoctorId || doctors[0]?.id || "";
   const activeScheduleRoomId = scheduleRoomId || rooms[0]?.id || "";
+  const selectedDateExceptions = useMemo(
+    () => doctorExceptions.filter((item) => item.date.slice(0, 10) === date),
+    [date, doctorExceptions],
+  );
+  const blockedScheduleSlots = useMemo(
+    () => new Set(timeSlots.filter((slot) => selectedDateExceptions.some((item) => exceptionBlocksSlot(item, slot)))),
+    [selectedDateExceptions, timeSlots],
+  );
+  const schedulableSelectedSlots = useMemo(
+    () => selectedSlots.filter((slot) => !blockedScheduleSlots.has(slot)),
+    [blockedScheduleSlots, selectedSlots],
+  );
   const activeAppointment = {
     ...appointmentDraft,
     patientId: appointmentDraft.patientId || patients[0]?.id || "",
@@ -112,11 +205,72 @@ export default function ClinicWorkbench() {
   };
 
   useEffect(() => {
+    if (!token || !activeScheduleRoomId) return;
+
+    let cancelled = false;
+    apiRequest<RoomScheduleDay[]>(
+      `/rooms/${activeScheduleRoomId}/schedules?dateFrom=${date}&dateTo=${date}&limit=1`,
+      { token },
+    )
+      .then((result) => {
+        if (cancelled) return;
+        const openSlots = result.data.find((item) => item.date.slice(0, 10) === date)?.slots ?? [];
+        setRoomScheduleSlots(openSlots);
+        setRoomDraftSlots([]);
+        setSelectedSlots((current) => current.filter((slot) => openSlots.includes(slot)));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const apiError = error as ApiClientError;
+        setRoomScheduleSlots([]);
+        setRoomDraftSlots([]);
+        setNotice({ kind: "error", text: apiError.code ? `${apiError.code}: ${apiError.message}` : apiError.message });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeScheduleRoomId, date, token]);
+
+  useEffect(() => {
     if (!token || !activeAppointment.patientId) return;
     apiRequest<{ groups: TreatmentOptionGroup[] }>(`/patients/${activeAppointment.patientId}/treatment-options`, { token })
       .then(result => setTreatmentOptions(result.data.groups))
       .catch(error => setNotice({ kind: "error", text: (error as ApiClientError).message }));
   }, [activeAppointment.patientId, token]);
+
+  const loadDoctorExceptions = useCallback(async (doctorId: string, accessToken = token) => {
+    if (!doctorId || !accessToken) {
+      setDoctorExceptions([]);
+      return;
+    }
+    try {
+      const result = await requestDoctorExceptions(doctorId, accessToken);
+      setDoctorExceptions(result.data);
+    } catch (error) {
+      const apiError = error as ApiClientError;
+      setDoctorExceptions([]);
+      setNotice({ kind: "error", text: apiError.code ? `${apiError.code}: ${apiError.message}` : apiError.message });
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (!activeScheduleDoctorId || !token) return;
+    let cancelled = false;
+    requestDoctorExceptions(activeScheduleDoctorId, token)
+      .then((result) => {
+        if (!cancelled) setDoctorExceptions(result.data);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const apiError = error as ApiClientError;
+        setDoctorExceptions([]);
+        setNotice({ kind: "error", text: apiError.code ? `${apiError.code}: ${apiError.message}` : apiError.message });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeScheduleDoctorId, token]);
 
   async function execute<T>(label: string, method: string, path: string, body?: unknown) {
     setBusy(label);
@@ -187,8 +341,76 @@ export default function ClinicWorkbench() {
     await refresh();
   }
 
+  async function saveRoomSchedule() {
+    if (!activeScheduleRoomId || roomDraftSlots.length === 0) return;
+    const nextSlots = [...new Set([...roomScheduleSlots, ...roomDraftSlots])].sort();
+    setBusy("room-schedule");
+    setNotice(null);
+    try {
+      await apiRequest(`/rooms/${activeScheduleRoomId}/schedules`, {
+        method: "POST",
+        token,
+        body: JSON.stringify({ date, slots: nextSlots }),
+      });
+      addLog("POST", `/rooms/${activeScheduleRoomId}/schedules`, true, "เปิดใช้งานห้องตามช่วงเวลาที่เลือกแล้ว");
+      setRoomScheduleSlots(nextSlots);
+      setRoomDraftSlots([]);
+      setSelectedSlots(roomDraftSlots);
+      setNotice({ kind: "success", text: "บันทึกเวลาเปิดห้องแล้ว เลือกแพทย์และลงเวรใน slot ที่เปิดได้เลย" });
+    } catch (error) {
+      const apiError = error as ApiClientError;
+      const message = apiError.code ? `${apiError.code}: ${apiError.message}` : apiError.message;
+      addLog("POST", `/rooms/${activeScheduleRoomId}/schedules`, false, message);
+      setNotice({ kind: "error", text: message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveClinicHours() {
+    if (clinicHoursDraft.openHour >= clinicHoursDraft.closeHour) {
+      setNotice({ kind: "error", text: "เวลาเปิดคลินิกต้องน้อยกว่าเวลาปิด" });
+      return;
+    }
+    setBusy("clinic-hours");
+    setNotice(null);
+    try {
+      const result = await apiRequest<ClinicSettings>("/clinic/settings/hours", {
+        method: "PATCH",
+        token,
+        body: JSON.stringify(clinicHoursDraft),
+      });
+      setClinicSettings(result.data);
+      const configuredSlots = buildHourSlots(result.data.openHour, result.data.closeHour);
+      const configuredEndSlots = [
+        ...configuredSlots.slice(1),
+        `${String(result.data.closeHour).padStart(2, "0")}:00`,
+      ];
+      setSelectedSlots((current) => current.filter((slot) => configuredSlots.includes(slot)));
+      setRoomDraftSlots((current) => current.filter((slot) => configuredSlots.includes(slot)));
+      setAppointmentDraft((current) => ({
+        ...current,
+        startTime: configuredSlots.includes(current.startTime) ? current.startTime : (configuredSlots[0] ?? ""),
+      }));
+      setExceptionDraft((current) => ({
+        ...current,
+        startTime: configuredSlots.includes(current.startTime) ? current.startTime : (configuredSlots[0] ?? ""),
+        endTime: configuredEndSlots.includes(current.endTime) ? current.endTime : (configuredEndSlots[0] ?? ""),
+      }));
+      addLog("PATCH", "/clinic/settings/hours", true, `ตั้งเวลา ${result.data.openHour}:00–${result.data.closeHour}:00 แล้ว`);
+      setNotice({ kind: "success", text: "บันทึกเวลาเปิด–ปิดคลินิกแล้ว ตารางเวลาถูกสร้างใหม่อัตโนมัติ" });
+    } catch (error) {
+      const apiError = error as ApiClientError;
+      const message = apiError.code ? `${apiError.code}: ${apiError.message}` : apiError.message;
+      addLog("PATCH", "/clinic/settings/hours", false, message);
+      setNotice({ kind: "error", text: message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function saveSchedule() {
-    if (!activeScheduleDoctorId || !activeScheduleRoomId || selectedSlots.length === 0) return;
+    if (!activeScheduleDoctorId || !activeScheduleRoomId || schedulableSelectedSlots.length === 0) return;
     setBusy("schedule");
     setNotice(null);
     try {
@@ -200,16 +422,78 @@ export default function ClinicWorkbench() {
         if (apiError.status !== 409) throw error;
         addLog("POST", `/doctors/${activeScheduleDoctorId}/rooms`, true, "หมอผูกกับห้องนี้อยู่แล้ว");
       }
-      await apiRequest(`/rooms/${activeScheduleRoomId}/schedules`, { method: "POST", token, body: JSON.stringify({ date, slots: selectedSlots }) });
-      addLog("POST", `/rooms/${activeScheduleRoomId}/schedules`, true, "บันทึกเวลาเปิดห้องแล้ว");
-      await apiRequest(`/doctors/${activeScheduleDoctorId}/schedules`, { method: "POST", token, body: JSON.stringify({ date, slots: selectedSlots, roomId: activeScheduleRoomId }) });
+      await apiRequest(`/doctors/${activeScheduleDoctorId}/schedules`, { method: "POST", token, body: JSON.stringify({ date, slots: schedulableSelectedSlots, roomId: activeScheduleRoomId }) });
       addLog("POST", `/doctors/${activeScheduleDoctorId}/schedules`, true, "บันทึกเวรหมอแล้ว");
-      setNotice({ kind: "success", text: "ผูกห้องและลงเวรหมอสำเร็จ" });
+      setNotice({ kind: "success", text: "ผูกห้องและลงเวรหมอในช่วงเวลาที่ห้องเปิดสำเร็จ" });
       await refresh(token, date);
     } catch (error) {
       const apiError = error as ApiClientError;
       const message = apiError.code ? `${apiError.code}: ${apiError.message}` : (apiError.message ?? String(error));
       addLog("POST", "schedule workflow", false, message);
+      setNotice({ kind: "error", text: message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createDoctorException(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeScheduleDoctorId) return;
+    if (
+      exceptionDraft.type === "PARTIAL_OFF" &&
+      timeToMinutes(exceptionDraft.startTime) >= timeToMinutes(exceptionDraft.endTime)
+    ) {
+      setNotice({ kind: "error", text: "เวลาเริ่มงดตรวจต้องน้อยกว่าเวลาสิ้นสุด" });
+      return;
+    }
+
+    const path = `/doctors/${activeScheduleDoctorId}/schedule-exceptions`;
+    setBusy("doctor-exception");
+    setNotice(null);
+    try {
+      const body = {
+        date,
+        type: exceptionDraft.type,
+        reason: exceptionDraft.reason.trim() || undefined,
+        ...(exceptionDraft.type === "PARTIAL_OFF"
+          ? { startTime: exceptionDraft.startTime, endTime: exceptionDraft.endTime }
+          : {}),
+      };
+      const result = await apiRequest<DoctorScheduleException>(path, {
+        method: "POST",
+        token,
+        body: JSON.stringify(body),
+      });
+      addLog("POST", path, true, result.message);
+      setExceptionDraft((current) => ({ ...current, reason: "" }));
+      setNotice({ kind: "success", text: "บันทึกวันหยุด/งดตรวจแล้ว slot ที่ได้รับผลกระทบถูกปิดทันที" });
+      await loadDoctorExceptions(activeScheduleDoctorId);
+      await refresh(token, date);
+    } catch (error) {
+      const apiError = error as ApiClientError;
+      const message = apiError.code ? `${apiError.code}: ${apiError.message}` : apiError.message;
+      addLog("POST", path, false, message);
+      setNotice({ kind: "error", text: message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteDoctorException(exceptionId: string) {
+    if (!activeScheduleDoctorId) return;
+    const path = `/doctors/${activeScheduleDoctorId}/schedule-exceptions/${exceptionId}`;
+    setBusy(`delete-exception-${exceptionId}`);
+    setNotice(null);
+    try {
+      const result = await apiRequest<null>(path, { method: "DELETE", token });
+      addLog("DELETE", path, true, result.message);
+      setNotice({ kind: "success", text: "ลบวันหยุด/งดตรวจแล้ว สามารถลงเวรในช่วงเวลานี้ได้" });
+      await loadDoctorExceptions(activeScheduleDoctorId);
+      await refresh(token, date);
+    } catch (error) {
+      const apiError = error as ApiClientError;
+      const message = apiError.code ? `${apiError.code}: ${apiError.message}` : apiError.message;
+      addLog("DELETE", path, false, message);
       setNotice({ kind: "error", text: message });
     } finally {
       setBusy(null);
@@ -318,8 +602,45 @@ export default function ClinicWorkbench() {
           </section>
 
           <section id="schedule" className="panel schedule-panel">
-            <PanelHeading icon="⌁" tone="violet" step="STEP 02" title="ผูกห้องและลงตารางเวร" trailing={<span className="api-chip">3 API calls</span>} />
-            <div className="schedule-layout"><div className="schedule-fields"><label>แพทย์<select value={activeScheduleDoctorId} onChange={(event) => setScheduleDoctorId(event.target.value)}><option value="">เลือกแพทย์</option>{doctors.map((doctor) => <option key={doctor.id} value={doctor.id}>{doctorName(doctor)}</option>)}</select></label><label>ห้อง<select value={activeScheduleRoomId} onChange={(event) => setScheduleRoomId(event.target.value)}><option value="">เลือกห้อง</option>{rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}</select></label><label>วันที่<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label></div><div><span className="field-title">ช่วงเวลาที่เข้าเวร</span><div className="slot-picker">{timeSlots.map((slot) => <button key={slot} type="button" className={selectedSlots.includes(slot) ? "selected" : ""} onClick={() => setSelectedSlots((current) => current.includes(slot) ? current.filter((item) => item !== slot) : [...current, slot].sort())}>{slot}<small>{selectedSlots.includes(slot) ? "เลือกแล้ว" : "ว่าง"}</small></button>)}</div></div><button className="primary-button schedule-submit" onClick={() => void saveSchedule()} disabled={!activeScheduleDoctorId || !activeScheduleRoomId || selectedSlots.length === 0 || busy === "schedule"}>{busy === "schedule" ? "กำลังบันทึก..." : "บันทึกการผูกห้องและตารางเวร"}</button></div>
+            <PanelHeading icon="⌁" tone="violet" step="STEP 02" title="เปิดห้องและลงตารางเวร" trailing={<span className="api-chip">Room → Doctor</span>} />
+            <div className="schedule-layout">
+              <div className="clinic-hours-config"><div><b>ช่วงเวลาเปิดคลินิก</b><small>ใช้กำหนดขอบเขตตารางเวลาเท่านั้น</small></div><label>เปิด<input type="number" min="0" max="23" value={clinicHoursDraft.openHour} onChange={(event) => setClinicHoursDraft((current) => ({ ...current, openHour: Number(event.target.value) }))} /></label><span>ถึง</span><label>ปิด<input type="number" min="1" max="24" value={clinicHoursDraft.closeHour} onChange={(event) => setClinicHoursDraft((current) => ({ ...current, closeHour: Number(event.target.value) }))} /></label><button className="secondary-button" onClick={() => void saveClinicHours()} disabled={busy === "clinic-hours" || clinicHoursDraft.openHour >= clinicHoursDraft.closeHour}>{busy === "clinic-hours" ? "กำลังบันทึก…" : "บันทึกเวลา"}</button></div>
+              <div className="schedule-fields schedule-context"><label>ห้อง<select value={activeScheduleRoomId} onChange={(event) => { setScheduleRoomId(event.target.value); setRoomScheduleSlots([]); setRoomDraftSlots([]); setSelectedSlots([]); }}><option value="">เลือกห้อง</option>{rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}</select></label><label>วันที่<input type="date" value={date} onChange={(event) => { setDate(event.target.value); setRoomScheduleSlots([]); setRoomDraftSlots([]); setSelectedSlots([]); }} /></label><div className={`room-readiness ${roomScheduleSlots.length ? "ready" : "waiting"}`}><small>สถานะห้อง</small><b>{roomScheduleSlots.length ? `เปิดแล้ว ${roomScheduleSlots.length} slot` : "ยังไม่มีเวลาเปิด"}</b></div></div>
+              <div className="schedule-stage-grid">
+                <section className="schedule-stage">
+                  <header><span>1</span><div><b>กำหนดเวลาเปิดห้อง</b><small>เปิดห้องก่อน จึงจะลงเวรหมอได้</small></div></header>
+                  <div className="slot-picker">{timeSlots.map((slot) => { const isOpen = roomScheduleSlots.includes(slot); const isDraft = roomDraftSlots.includes(slot); return <button key={slot} type="button" disabled={isOpen} className={isOpen ? "open" : isDraft ? "selected" : ""} onClick={() => setRoomDraftSlots((current) => current.includes(slot) ? current.filter((item) => item !== slot) : [...current, slot].sort())}>{slot}<small>{isOpen ? "เปิดแล้ว" : isDraft ? "กำลังเพิ่ม" : "ห้องปิด"}</small></button>; })}</div>
+                  <button className="secondary-button stage-action" onClick={() => void saveRoomSchedule()} disabled={!activeScheduleRoomId || roomDraftSlots.length === 0 || busy === "room-schedule"}>{busy === "room-schedule" ? "กำลังเปิดห้อง…" : `บันทึกเวลาเปิดห้อง${roomDraftSlots.length ? ` (${roomDraftSlots.length})` : ""}`}</button>
+                </section>
+                <section className={`schedule-stage ${roomScheduleSlots.length ? "" : "locked"}`}>
+                  <header><span>2</span><div><b>ลงเวรหมอ</b><small>{roomScheduleSlots.length ? "เลือกได้เฉพาะเวลาที่ห้องเปิด" : "รอบันทึกเวลาเปิดห้อง"}</small></div></header>
+                  <label>แพทย์<select value={activeScheduleDoctorId} onChange={(event) => setScheduleDoctorId(event.target.value)} disabled={!roomScheduleSlots.length}><option value="">เลือกแพทย์</option>{doctors.map((doctor) => <option key={doctor.id} value={doctor.id}>{doctorName(doctor)}</option>)}</select></label>
+                  <div className="slot-picker">{timeSlots.map((slot) => { const available = roomScheduleSlots.includes(slot); const blocked = blockedScheduleSlots.has(slot); const selected = schedulableSelectedSlots.includes(slot); return <button key={slot} type="button" disabled={!available || blocked} className={blocked ? "exception" : selected ? "selected" : available ? "available" : "closed"} onClick={() => setSelectedSlots((current) => current.includes(slot) ? current.filter((item) => item !== slot) : [...current, slot].sort())}>{slot}<small>{blocked ? "งดตรวจ" : !available ? "ห้องปิด" : selected ? "เลือกแล้ว" : "พร้อมลงเวร"}</small></button>; })}</div>
+                  <button className="primary-button stage-action" onClick={() => void saveSchedule()} disabled={!activeScheduleDoctorId || !activeScheduleRoomId || schedulableSelectedSlots.length === 0 || busy === "schedule"}>{busy === "schedule" ? "กำลังบันทึก…" : "ผูกห้องและบันทึกเวรหมอ"}</button>
+                </section>
+              </div>
+              <section className="exception-management">
+                <div className="exception-heading">
+                  <div><p className="eyebrow">DOCTOR AVAILABILITY</p><h4>วันหยุดและงดตรวจ</h4><small>Exception มีผลเหนือเวรแพทย์และปิด slot สำหรับการนัดหมาย</small></div>
+                  <span className={selectedDateExceptions.length ? "has-exception" : ""}>{selectedDateExceptions.length ? `${selectedDateExceptions.length} รายการในวันที่เลือก` : "พร้อมลงเวร"}</span>
+                </div>
+                <div className="exception-grid">
+                  <form className="exception-form" onSubmit={createDoctorException}>
+                    <label>แพทย์<select value={activeScheduleDoctorId} onChange={(event) => setScheduleDoctorId(event.target.value)} required><option value="">เลือกแพทย์</option>{doctors.map((doctor) => <option key={doctor.id} value={doctor.id}>{doctorName(doctor)}</option>)}</select></label>
+                    <label>วันที่<input type="date" value={date} onChange={(event) => setDate(event.target.value)} required /></label>
+                    <label>ประเภท<select value={exceptionDraft.type} onChange={(event) => setExceptionDraft((current) => ({ ...current, type: event.target.value as DoctorExceptionType }))}><option value="DAY_OFF">หยุดทั้งวัน</option><option value="PARTIAL_OFF">งดตรวจบางช่วง</option><option value="UNAVAILABLE">ไม่พร้อมตรวจทั้งวัน</option></select></label>
+                    {exceptionDraft.type === "PARTIAL_OFF" && <div className="exception-time-range"><label>ตั้งแต่<select value={exceptionDraft.startTime} onChange={(event) => { const startTime = event.target.value; setExceptionDraft((current) => ({ ...current, startTime, endTime: timeToMinutes(current.endTime) > timeToMinutes(startTime) ? current.endTime : (exceptionEndSlots.find((slot) => timeToMinutes(slot) > timeToMinutes(startTime)) ?? "") })); }} required>{timeSlots.map((slot) => <option key={slot} value={slot}>{slot}</option>)}</select></label><span>ถึง</span><label>สิ้นสุด<select value={exceptionDraft.endTime} onChange={(event) => setExceptionDraft((current) => ({ ...current, endTime: event.target.value }))} required>{validExceptionEndSlots.map((slot) => <option key={slot} value={slot}>{slot}</option>)}</select></label></div>}
+                    <label className="exception-reason">เหตุผล<input value={exceptionDraft.reason} onChange={(event) => setExceptionDraft((current) => ({ ...current, reason: event.target.value }))} placeholder="เช่น ลาพักร้อน หรือประชุมวิชาการ" /></label>
+                    <button className="primary-button" disabled={!activeScheduleDoctorId || busy === "doctor-exception"}>{busy === "doctor-exception" ? "กำลังบันทึก…" : "+ บันทึกวันหยุด / งดตรวจ"}</button>
+                  </form>
+                  <div className="exception-list">
+                    <header><b>รายการของแพทย์ที่เลือก</b><small>{doctorExceptions.length} รายการ</small></header>
+                    {doctorExceptions.length === 0 ? <div className="exception-empty"><b>ยังไม่มีวันหยุดหรืองดตรวจ</b><small>เพิ่มรายการทางซ้ายเพื่อปิดเวลารับนัด</small></div> : doctorExceptions.map((item) => <article key={item.id} className={item.date.slice(0, 10) === date ? "selected-date" : ""}><span className={`exception-type ${item.type.toLowerCase()}`}>{item.type === "PARTIAL_OFF" ? "◷" : "—"}</span><div><b>{exceptionLabels[item.type]}</b><small>{item.date.slice(0, 10)}{item.startTime && item.endTime ? ` · ${item.startTime}–${item.endTime}` : " · ทั้งวัน"}</small>{item.reason && <p>{item.reason}</p>}</div><button type="button" onClick={() => void deleteDoctorException(item.id)} disabled={busy === `delete-exception-${item.id}`}>{busy === `delete-exception-${item.id}` ? "…" : "ลบ"}</button></article>)}
+                  </div>
+                </div>
+              </section>
+              <p className="schedule-rule-note"><b>กติกาการจอง:</b> ระบบจะแสดงคิวว่างเมื่อทั้งห้องเปิดและหมอมีเวรในวัน เวลา และห้องเดียวกันเท่านั้น</p>
+            </div>
           </section>
 
           <section className="two-column patient-appointment">
@@ -330,7 +651,7 @@ export default function ClinicWorkbench() {
             <article className="panel" id="appointment-form"><PanelHeading icon="✓" tone="coral" step="STEP 04" title="สร้างนัดหมาย" /><form onSubmit={createAppointment} className="compact-form"><label className="wide">คนไข้<select value={activeAppointment.patientId} onChange={(event) => setAppointmentDraft({ ...appointmentDraft, patientId: event.target.value })} required><option value="">เลือกคนไข้</option>{patients.map((patient) => <option key={patient.id} value={patient.id}>{patient.hn} — {patientName(patient)}</option>)}</select></label><label>แพทย์<select value={activeAppointment.doctorId} onChange={(event) => setAppointmentDraft({ ...appointmentDraft, doctorId: event.target.value })} required><option value="">เลือกแพทย์</option>{doctors.map((doctor) => <option key={doctor.id} value={doctor.id}>{doctorName(doctor)}</option>)}</select></label><label>ห้อง<select value={activeAppointment.roomId} onChange={(event) => setAppointmentDraft({ ...appointmentDraft, roomId: event.target.value })} required><option value="">เลือกห้อง</option>{rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}</select></label><label>วันที่<input type="date" value={date} onChange={(event) => setDate(event.target.value)} required /></label><label>เวลา<div className="time-pick-row"><select value={activeAppointment.startTime} onChange={(event) => setAppointmentDraft({ ...appointmentDraft, startTime: event.target.value })}>{timeSlots.map((slot) => <option key={slot}>{slot}</option>)}</select><button type="button" className="ghost-button" onClick={() => void openCalendarModal()}>📅 ดูตาราง</button></div></label><div className="wide appointment-rights"><b>บริการและคอร์สที่ซื้อไว้</b>{!treatmentOptions.length?<small>ยังไม่มีสิทธิ์พร้อมใช้งาน</small>:treatmentOptions.map(group=><section key={group.key}><header>{group.sourceName}</header>{group.items.map(item=><label key={item.entitlementId} className={selectedEntitlements.includes(item.entitlementId)?"selected":""}><input type="checkbox" checked={selectedEntitlements.includes(item.entitlementId)} onChange={()=>setSelectedEntitlements(current=>current.includes(item.entitlementId)?current.filter(id=>id!==item.entitlementId):[...current,item.entitlementId])}/><span><b>{item.name}</b><small>{item.type} · เหลือ {item.remainingUnits}/{item.totalUnits} ครั้ง</small></span></label>)}</section>)}</div><label className="wide">อาการเบื้องต้น<input value={activeAppointment.chiefComplaint} onChange={(event) => setAppointmentDraft({ ...appointmentDraft, chiefComplaint: event.target.value })} /></label><button className="primary-button wide" disabled={busy === "appointment" || !activeAppointment.patientId}>{busy === "appointment" ? "กำลังสร้างนัด..." : "ยืนยันสร้างนัดหมาย"}</button></form></article>
           </section>
 
-          <CalendarPanel date={date} calendar={calendar} appointments={appointments} onChooseSlot={chooseSlot} onDateChange={(d) => { setDate(d); void refresh(token, d); }} />
+          <CalendarPanel date={date} timelineSlots={timeSlots} calendar={calendar} appointments={appointments} onChooseSlot={chooseSlot} onDateChange={(d) => { setDate(d); void refresh(token, d); }} />
           {showCalendarModal && <AppointmentCalendarModal date={date} schedules={doctorSchedules} loading={loadingSchedules} rooms={rooms} calendar={calendar} onPick={pickSlotFromModal} onClose={() => setShowCalendarModal(false)} />}
           <ActivityPanel logs={logs} onClear={() => setLogs([])} />
         </div>
@@ -415,13 +736,13 @@ function AppointmentCalendarModal({ date, schedules, loading, rooms, onPick, onC
   );
 }
 
-function CalendarPanel({ date, calendar, appointments, onChooseSlot, onDateChange }: { date: string; calendar: CalendarData | null; appointments: Appointment[]; onChooseSlot: (room: CalendarRoom, time: string, slot: CalendarSlot) => void; onDateChange: (date: string) => void }) {
+function CalendarPanel({ date, timelineSlots, calendar, appointments, onChooseSlot, onDateChange }: { date: string; timelineSlots: string[]; calendar: CalendarData | null; appointments: Appointment[]; onChooseSlot: (room: CalendarRoom, time: string, slot: CalendarSlot) => void; onDateChange: (date: string) => void }) {
   function shiftDate(days: number) {
     const d = new Date(date);
     d.setDate(d.getDate() + days);
     onDateChange(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
   }
-  return <section id="calendar" className="panel calendar-panel"><div className="panel-heading"><div><p className="eyebrow">ROOM-CENTRIC CALENDAR</p><h3>ตารางนัดหมาย</h3></div><div className="cal-nav"><button className="ghost-button" onClick={() => shiftDate(-1)}>‹</button><input type="date" value={date} onChange={(e) => onDateChange(e.target.value)} /><button className="ghost-button" onClick={() => shiftDate(1)}>›</button></div><div className="legend"><span><i className="available" />ว่าง</span><span><i className="booked" />มีนัด</span><span><i className="closed" />ปิด</span></div></div>{!calendar?.rooms.length ? <div className="empty-state"><b>ยังไม่มีตารางเวรในวันนี้</b><span>เลือกแพทย์ ห้อง และช่วงเวลาด้านบน แล้วกดบันทึกตารางเวร</span></div> : <div className="calendar-table"><div className="calendar-row header"><div>ห้อง / เวลา</div>{calendar.timeSlots.map((time) => <div key={time}>{time}</div>)}</div>{calendar.rooms.map((room) => <div className="calendar-row" key={room.roomId}><div><b>{room.roomName}</b><small>{room.roomCode}</small></div>{calendar.timeSlots.map((time) => { const slot = room.slots[time]; return <button key={time} className={`calendar-slot ${slot?.status.toLowerCase() ?? "closed"}`} onClick={() => slot && onChooseSlot(room, time, slot)} disabled={slot?.status !== "AVAILABLE"}>{slot?.status === "BOOKED" ? <><b>{slot.appointment?.patient.name}</b><small>{slot.appointment?.appointmentNo}</small></> : slot?.status === "AVAILABLE" ? <><b>ว่าง</b><small>{slot.doctor?.name}</small></> : <small>—</small>}</button>; })}</div>)}</div>}{!!appointments.length && <div className="appointment-list"><h4>นัดหมายวันนี้</h4>{appointments.map((appointment) => <div key={appointment.id}><span className="time-badge">{appointment.startTime}</span><span><b>{patientName(appointment.patient)}</b><small>{doctorName(appointment.doctor)} · {appointment.room.name}</small></span><em>{appointment.status}</em></div>)}</div>}</section>;
+  return <section id="calendar" className="panel calendar-panel"><div className="panel-heading"><div><p className="eyebrow">ROOM-CENTRIC CALENDAR</p><h3>ตารางนัดหมาย</h3></div><div className="cal-nav"><button className="ghost-button" onClick={() => shiftDate(-1)}>‹</button><input type="date" value={date} onChange={(e) => onDateChange(e.target.value)} /><button className="ghost-button" onClick={() => shiftDate(1)}>›</button></div><div className="legend"><span><i className="available" />ว่าง</span><span><i className="booked" />มีนัด</span><span><i className="closed" />ปิด</span></div></div>{!calendar?.rooms.length ? <div className="empty-state"><b>ยังไม่มีตารางเวรในวันนี้</b><span>เลือกแพทย์ ห้อง และช่วงเวลาด้านบน แล้วกดบันทึกตารางเวร</span></div> : <div className="calendar-table"><div className="calendar-row header" style={{ "--slot-count": timelineSlots.length } as React.CSSProperties}><div>ห้อง / เวลา</div>{timelineSlots.map((time) => <div key={time}>{time}</div>)}</div>{calendar.rooms.map((room) => <div className="calendar-row" style={{ "--slot-count": timelineSlots.length } as React.CSSProperties} key={room.roomId}><div><b>{room.roomName}</b><small>{room.roomCode}</small></div>{timelineSlots.map((time) => { const slot = room.slots[time]; return <button key={time} className={`calendar-slot ${slot?.status.toLowerCase() ?? "closed"}`} onClick={() => slot && onChooseSlot(room, time, slot)} disabled={slot?.status !== "AVAILABLE"}>{slot?.status === "BOOKED" ? <><b>{slot.appointment?.patient.name}</b><small>{slot.appointment?.appointmentNo}</small></> : slot?.status === "AVAILABLE" ? <><b>ว่าง</b><small>{slot.doctor?.name}</small></> : <small>—</small>}</button>; })}</div>)}</div>}{!!appointments.length && <div className="appointment-list"><h4>นัดหมายวันนี้</h4>{appointments.map((appointment) => <div key={appointment.id}><span className="time-badge">{appointment.startTime}</span><span><b>{patientName(appointment.patient)}</b><small>{doctorName(appointment.doctor)} · {appointment.room.name}</small></span><em>{appointment.status}</em></div>)}</div>}</section>;
 }
 
 function ActivityPanel({ logs, onClear }: { logs: Log[]; onClear: () => void }) {
