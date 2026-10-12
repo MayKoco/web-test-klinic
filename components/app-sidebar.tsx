@@ -1,7 +1,7 @@
 "use client";
 
 type SidebarProps = {
-  active: "queue" | "scheduling" | "appointment" | "catalog" | "bundles" | "sales" | "reports" | "resources" | "schedule";
+  active: "queue" | "scheduling" | "appointment" | "catalog" | "bundles" | "inventory" | "sales" | "reports" | "resources" | "schedule";
   profile?: { name: string; clinicCode: string } | null;
 };
 
@@ -19,6 +19,7 @@ const groups = [
     items: [
       { id: "catalog", href: "/catalog", icon: "◇", label: "ผลิตภัณฑ์และบริการ" },
       { id: "bundles", href: "/catalog?tab=BUNDLES", icon: "⌘", label: "แพ็กเกจและโปรโมชัน" },
+      { id: "inventory", href: "/inventory", icon: "▤", label: "คลังสินค้า / Lot" },
       { id: "sales", href: "/sales", icon: "฿", label: "การขายและชำระเงิน" },
       { id: "reports", href: "/catalog?tab=REPORTS", icon: "↗", label: "รายงาน" },
     ],
