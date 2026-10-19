@@ -47,6 +47,22 @@ type Receipt = {
   reversalReason?: string;
   lines: ReceiptLine[];
 };
+type Adjustment = {
+  id: string;
+  adjustmentNo: string;
+  occurredAt: string;
+  reason: string;
+  note?: string;
+  createdByName: string;
+  lines: {
+    id: string;
+    previousQuantity: string;
+    countedQuantity: string;
+    quantityDelta: string;
+    product: { id: string; code: string; name: string };
+    lot: { id: string; lotNumber: string };
+  }[];
+};
 type DraftLine = {
   key: string;
   productMode: "EXISTING" | "NEW";
@@ -79,10 +95,11 @@ const errorText = (error: unknown) => { const value = error as ApiClientError; r
 export default function InventoryWorkspace() {
   const [token, setToken] = useState("");
   const [profile, setProfile] = useState<{ name: string; clinicCode: string } | null>(null);
-  const [tab, setTab] = useState<"RECEIVE" | "STOCK" | "HISTORY">("RECEIVE");
+  const [tab, setTab] = useState<"RECEIVE" | "STOCK" | "ADJUST" | "HISTORY">("RECEIVE");
   const [products, setProducts] = useState<Product[]>([]);
   const [stock, setStock] = useState<Stock[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [lots, setLots] = useState<Record<string, Lot[]>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -90,18 +107,21 @@ export default function InventoryWorkspace() {
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [header, setHeader] = useState({ receivedAt: today(), externalDocumentNo: "", sourceName: "", note: "" });
   const [lines, setLines] = useState<DraftLine[]>([blankLine()]);
+  const [adjustment, setAdjustment] = useState({ occurredAt: today(), productId: "", lotId: "", countedQuantity: "", reason: "", note: "" });
 
   const load = useCallback(async (activeToken: string) => {
     setLoading(true);
     try {
-      const [catalogResult, stockResult, receiptResult] = await Promise.all([
+      const [catalogResult, stockResult, receiptResult, adjustmentResult] = await Promise.all([
         apiRequest<Product[]>("/catalog/items?type=PRODUCT&limit=100&sortBy=name&sortOrder=asc", { token: activeToken }),
         apiRequest<Stock[]>("/inventory/stock?includeZero=true&limit=100&sortBy=name&sortOrder=asc", { token: activeToken }),
         apiRequest<Receipt[]>("/inventory/receipts?limit=30&sortBy=createdAt&sortOrder=desc", { token: activeToken }),
+        apiRequest<Adjustment[]>("/inventory/adjustments?limit=30&sortBy=createdAt&sortOrder=desc", { token: activeToken }),
       ]);
       setProducts(catalogResult.data.filter(item => item.status !== "INACTIVE"));
       setStock(stockResult.data);
       setReceipts(receiptResult.data);
+      setAdjustments(adjustmentResult.data);
     } catch (error) {
       setNotice({ kind: "error", text: errorText(error) });
     } finally {
@@ -130,6 +150,9 @@ export default function InventoryWorkspace() {
 
   const filteredStock = useMemo(() => stock.filter(item => `${item.code} ${item.name}`.toLowerCase().includes(search.toLowerCase())), [stock, search]);
   const totals = useMemo(() => lines.reduce((result, line) => ({ quantity: result.quantity + Number(line.quantity || 0), cost: result.cost + Number(line.quantity || 0) * Number(line.unitCost || 0) }), { quantity: 0, cost: 0 }), [lines]);
+  const adjustmentProduct = stock.find(item => item.productId === adjustment.productId);
+  const adjustmentLot = adjustmentProduct?.lots.find(lot => lot.id === adjustment.lotId);
+  const adjustmentDelta = adjustmentLot && adjustment.countedQuantity !== "" ? Number(adjustment.countedQuantity) - Number(adjustmentLot.onHand) : null;
 
   function updateLine(key: string, patch: Partial<DraftLine>) {
     setLines(current => current.map(line => line.key === key ? { ...line, ...patch } : line));
@@ -194,6 +217,30 @@ export default function InventoryWorkspace() {
     finally { setSaving(false); }
   }
 
+  async function submitAdjustment(event: FormEvent) {
+    event.preventDefault();
+    if (!adjustment.productId || !adjustment.lotId || adjustment.countedQuantity === "" || !adjustment.reason.trim()) return;
+    if (adjustmentDelta === 0) return setNotice({ kind: "error", text: "ยอดตรวจนับเท่ากับยอดในระบบ จึงไม่มีส่วนต่างให้ปรับปรุง" });
+    setSaving(true); setNotice(null);
+    try {
+      await apiRequest("/inventory/adjustments", {
+        method: "POST",
+        token,
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({
+          occurredAt: new Date(`${adjustment.occurredAt}T12:00:00+07:00`).toISOString(),
+          reason: adjustment.reason.trim(),
+          note: adjustment.note.trim() || undefined,
+          lines: [{ productId: adjustment.productId, lotId: adjustment.lotId, countedQuantity: Number(adjustment.countedQuantity) }],
+        }),
+      });
+      setNotice({ kind: "success", text: `ปรับยอด ${adjustmentProduct?.name ?? "สินค้า"} ${adjustmentDelta && adjustmentDelta > 0 ? "+" : ""}${qty(adjustmentDelta ?? 0)} หน่วยแล้ว` });
+      setAdjustment({ occurredAt: today(), productId: "", lotId: "", countedQuantity: "", reason: "", note: "" });
+      await load(token);
+    } catch (error) { setNotice({ kind: "error", text: errorText(error) }); }
+    finally { setSaving(false); }
+  }
+
   if (!token && !loading) return <main className="login-required"><div><b>ต้องเข้าสู่ระบบก่อน</b><p>หน้า Inventory ใช้ token และ clinic scope เดียวกับระบบทดสอบ</p><a href="/login">ไปหน้าเข้าสู่ระบบ</a></div></main>;
 
   return <main className="app-shell inventory-app">
@@ -209,6 +256,7 @@ export default function InventoryWorkspace() {
         <nav className="inventory-tabs" aria-label="ส่วนงานคลังสินค้า">
           <button className={tab === "RECEIVE" ? "active" : ""} onClick={() => setTab("RECEIVE")}><span>＋</span><b>รับสินค้าเข้า</b><small>สร้างเอกสารและ Lot</small></button>
           <button className={tab === "STOCK" ? "active" : ""} onClick={() => setTab("STOCK")}><span>▦</span><b>ยอดคงเหลือ</b><small>แยกสินค้าและ Lot</small></button>
+          <button className={tab === "ADJUST" ? "active" : ""} onClick={() => setTab("ADJUST")}><span>±</span><b>ปรับปรุงสต็อก</b><small>บันทึกผลตรวจนับจริง</small></button>
           <button className={tab === "HISTORY" ? "active" : ""} onClick={() => setTab("HISTORY")}><span>↗</span><b>ประวัติรับเข้า</b><small>ตรวจสอบและกลับรายการ</small></button>
         </nav>
 
@@ -264,6 +312,23 @@ export default function InventoryWorkspace() {
         </form>}
 
         {tab === "STOCK" && <section className="panel inventory-stock"><header><div><p className="eyebrow">CURRENT BALANCE</p><h3>ยอดคงเหลือสินค้า</h3></div><input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="ค้นหาสินค้า…" /></header>{loading ? <Empty text="กำลังโหลดยอดคงเหลือ…" /> : !filteredStock.length ? <Empty text="ยังไม่มีข้อมูลสินค้า" /> : <div className="stock-table"><div className="stock-table-head"><span>สินค้า</span><span>ประเภท</span><span>ยอดรวม / ขั้นต่ำ</span><span>Lot / วันหมดอายุ / ส่วนลด</span></div>{filteredStock.map(item => {const isLow=Number(item.minStock)>0&&Number(item.totalOnHand)<=Number(item.minStock);return <article className={isLow?"low-stock-row":""} key={item.productId}><div><b>{item.name}</b><small>{item.code} · {item.unit}</small></div><span className={`class-pill ${item.productClass.toLowerCase()}`}>{item.productClass === "MEDICINE" ? "ยา" : item.productClass === "MEDICAL_SUPPLY" ? "เวชภัณฑ์" : "ทั่วไป"}</span><div className="stock-balance-cell"><strong className={Number(item.totalOnHand) < 0 ? "negative" : ""}>{qty(item.totalOnHand)} {item.unit}</strong><small>ขั้นต่ำ {qty(item.minStock)}{isLow?` · ขาด ${qty(item.shortage)}`:""}</small>{isLow&&<b>Stock ต่ำ</b>}</div><div className="stock-lots">{item.lots.length ? item.lots.map(lot => <LotDiscountEditor key={lot.id} lot={lot} unit={item.unit} token={token} saving={saving} setSaving={setSaving} onNotice={setNotice} onSaved={()=>void load(token)}/>) : <em>ยังไม่มี Lot</em>}{Number(item.unallocatedOnHand) !== 0 && <span className="unallocated"><b>ไม่ได้จัดสรร Lot</b><small>{qty(item.unallocatedOnHand)} {item.unit}</small></span>}</div></article>})}</div>}</section>}
+
+        {tab === "ADJUST" && <div className="adjustment-layout">
+          <form className="panel adjustment-form" onSubmit={submitAdjustment}>
+            <header><div><p className="eyebrow">PHYSICAL COUNT</p><h3>ปรับปรุงสต็อก</h3><p>ระบุยอดที่ตรวจนับจริง ระบบจะคำนวณส่วนต่างและบันทึก Movement ให้</p></div><span>ADJ</span></header>
+            <div className="adjustment-fields">
+              <label>วันที่ตรวจนับ *<input type="date" value={adjustment.occurredAt} onChange={event => setAdjustment(value => ({ ...value, occurredAt: event.target.value }))} required /></label>
+              <label>สินค้า *<select value={adjustment.productId} onChange={event => setAdjustment(value => ({ ...value, productId: event.target.value, lotId: "", countedQuantity: "" }))} required><option value="">เลือกสินค้า</option>{stock.filter(item => item.lots.length).map(item => <option key={item.productId} value={item.productId}>{item.code} · {item.name}</option>)}</select></label>
+              <label>Lot *<select value={adjustment.lotId} disabled={!adjustmentProduct} onChange={event => { const lot = adjustmentProduct?.lots.find(item => item.id === event.target.value); setAdjustment(value => ({ ...value, lotId: event.target.value, countedQuantity: lot?.onHand ?? "" })); }} required><option value="">เลือก Lot</option>{adjustmentProduct?.lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotNumber} · ระบบ {qty(lot.onHand)} {adjustmentProduct.unit}</option>)}</select></label>
+              <label>ยอดตรวจนับจริง *<input type="number" min="0" step="0.001" value={adjustment.countedQuantity} disabled={!adjustmentLot} onChange={event => setAdjustment(value => ({ ...value, countedQuantity: event.target.value }))} required /></label>
+              <label className="wide">เหตุผล *<textarea value={adjustment.reason} onChange={event => setAdjustment(value => ({ ...value, reason: event.target.value }))} placeholder="เช่น ตรวจนับประจำเดือนพบสินค้าขาด" required /></label>
+              <label className="wide">หมายเหตุ<input value={adjustment.note} onChange={event => setAdjustment(value => ({ ...value, note: event.target.value }))} placeholder="ข้อมูลประกอบเพิ่มเติม (ถ้ามี)" /></label>
+            </div>
+            <div className="adjustment-preview"><div><span>ยอดในระบบ</span><b>{adjustmentLot ? `${qty(adjustmentLot.onHand)} ${adjustmentProduct?.unit}` : "—"}</b></div><div><span>ยอดตรวจนับ</span><b>{adjustment.countedQuantity === "" ? "—" : `${qty(adjustment.countedQuantity)} ${adjustmentProduct?.unit}`}</b></div><div className={adjustmentDelta && adjustmentDelta < 0 ? "negative" : ""}><span>ส่วนต่าง</span><b>{adjustmentDelta === null ? "—" : `${adjustmentDelta > 0 ? "+" : ""}${qty(adjustmentDelta)} ${adjustmentProduct?.unit}`}</b></div></div>
+            <button className="primary-button" disabled={saving || adjustmentDelta === null || adjustmentDelta === 0}>{saving ? "กำลังบันทึก…" : "ยืนยันการปรับปรุงสต็อก"}</button>
+          </form>
+          <section className="panel adjustment-history"><header><div><p className="eyebrow">AUDIT HISTORY</p><h3>ประวัติการปรับปรุง</h3></div><span>{adjustments.length} รายการล่าสุด</span></header>{loading ? <Empty text="กำลังโหลดประวัติ…" /> : !adjustments.length ? <Empty text="ยังไม่มีการปรับปรุงสต็อก" /> : <div>{adjustments.map(item => <article key={item.id}><div className="adjustment-id"><b>{item.adjustmentNo}</b><small>{date(item.occurredAt)} · {item.createdByName}</small></div><p>{item.reason}</p>{item.lines.map(line => <div className="adjustment-line" key={line.id}><span><b>{line.product.name}</b><small>{line.product.code} · Lot {line.lot.lotNumber}</small></span><span>{qty(line.previousQuantity)} → {qty(line.countedQuantity)}</span><em className={Number(line.quantityDelta) < 0 ? "negative" : ""}>{Number(line.quantityDelta) > 0 ? "+" : ""}{qty(line.quantityDelta)}</em></div>)}</article>)}</div>}</section>
+        </div>}
 
         {tab === "HISTORY" && <section className="panel inventory-history"><header><div><p className="eyebrow">RECEIPT HISTORY</p><h3>ประวัติเอกสารรับเข้า</h3></div><span>{receipts.length} เอกสารล่าสุด</span></header>{loading ? <Empty text="กำลังโหลดประวัติ…" /> : !receipts.length ? <Empty text="ยังไม่มีเอกสารรับเข้า" /> : <div>{receipts.map(receipt => <article key={receipt.id}><div className="receipt-identity"><span>RCV</span><div><b>{receipt.receiptNo}</b><small>{date(receipt.receivedAt)} · {receipt.sourceName || "ไม่ระบุที่มา"}</small></div></div><div><small>เอกสารอ้างอิง</small><b>{receipt.externalDocumentNo || "—"}</b></div><div><small>จำนวน</small><b>{receipt.lines.length} รายการ / {qty(receipt.lines.reduce((sum, line) => sum + Number(line.quantity), 0))} หน่วย</b></div><div><small>มูลค่า</small><b>{money(receipt.totalCost)}</b></div><span className={`receipt-status ${receipt.status.toLowerCase()}`}>{receipt.status === "POSTED" ? "รับเข้าแล้ว" : "กลับรายการแล้ว"}</span>{receipt.status === "POSTED" ? <button disabled={saving} onClick={() => void reverse(receipt)}>กลับรายการ</button> : <small className="reversal-note">{receipt.reversalReason}</small>}</article>)}</div>}</section>}
       </div>

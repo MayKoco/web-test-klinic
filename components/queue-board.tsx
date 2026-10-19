@@ -9,6 +9,9 @@ import { ApiClientError, apiRequest } from "@/lib/api";
 type BoardAction = "CHECK_IN" | "START" | "FINISH" | "COMPLETE" | "CANCEL";
 type SettlementMode = "PAYMENT" | "ENTITLEMENT" | "NO_CHARGE";
 type CatalogItem = { id: string; code: string; name: string; type: "PRODUCT" | "SERVICE" | "COURSE"; basePrice?: string; finalPrice: string; productDetail?: { unit?: string | null; currentStock?: number } };
+type SymptomTag = { id: string; name: string; createdAt?: string; updatedAt?: string };
+type TreatmentAreaType = "FACE" | "BODY" | "MOUTH" | "OTHER";
+type TreatmentArea = { type: TreatmentAreaType; part: string; partName: string; detail: string };
 type Entitlement = { id: string; catalogItemId: string; totalUnits: number; usedUnits: number; remainingUnits: number; expiresAt?: string; status: string };
 type AppointmentItem = { id: string; catalogItemId: string; name: string; type: string; quantity: number; settlementMode: SettlementMode; entitlementId?: string | null; usageStatus?: "PLANNED" | "PENDING" | "USED" | "NOT_USED"; resolutionNote?: string | null };
 type UnpaidSale = { id: string; status: string; balanceAmount: string };
@@ -77,6 +80,38 @@ type TreatmentContext = {
   items: TreatmentContextItem[];
 };
 
+const treatmentPartGroups: Record<Exclude<TreatmentAreaType, "OTHER">, { part: string; partName: string }[]> = {
+  FACE: [
+    { part: "FOREHEAD", partName: "หน้าผาก" },
+    { part: "LEFT_EYE", partName: "ตาซ้าย" },
+    { part: "RIGHT_EYE", partName: "ตาขวา" },
+    { part: "NOSE", partName: "จมูก" },
+    { part: "MOUTH", partName: "ปาก" },
+    { part: "CHIN", partName: "คาง" },
+    { part: "LEFT_CHEEK", partName: "แก้มซ้าย" },
+    { part: "RIGHT_CHEEK", partName: "แก้มขวา" },
+    { part: "LEFT_EAR", partName: "หูซ้าย" },
+    { part: "RIGHT_EAR", partName: "หูขวา" },
+  ],
+  BODY: [
+    { part: "NECK", partName: "ลำคอ" },
+    { part: "CHEST", partName: "หน้าอก" },
+    { part: "BACK", partName: "แผ่นหลัง" },
+    { part: "LEFT_ARM", partName: "แขนซ้าย" },
+    { part: "RIGHT_ARM", partName: "แขนขวา" },
+    { part: "LEFT_LEG", partName: "ขาซ้าย" },
+    { part: "RIGHT_LEG", partName: "ขาขวา" },
+  ],
+  MOUTH: [
+    { part: "UPPER_LIP", partName: "ริมฝีปากบน" },
+    { part: "LOWER_LIP", partName: "ริมฝีปากล่าง" },
+    { part: "UPPER_GUM", partName: "เหงือกบน" },
+    { part: "LOWER_GUM", partName: "เหงือกล่าง" },
+    { part: "UPPER_TEETH", partName: "ฟันบน" },
+    { part: "LOWER_TEETH", partName: "ฟันล่าง" },
+  ],
+};
+
 const blankBoard: BoardData = {
   summary: { scheduled: 0, waiting: 0, inProgress: 0, pendingClose: 0, completed: 0 },
   columns: { scheduled: [], waiting: [], inProgress: [], pendingClose: [], completed: [] },
@@ -132,6 +167,7 @@ export default function QueueBoard() {
   const [treatmentContext, setTreatmentContext] = useState<TreatmentContext | null>(null);
   const [treatmentResults, setTreatmentResults] = useState<Record<string, "PENDING" | "USED" | "NOT_USED">>({});
   const [treatmentProducts, setTreatmentProducts] = useState<CatalogItem[]>([]);
+  const [treatmentSymptoms, setTreatmentSymptoms] = useState<SymptomTag[]>([]);
   const [payment, setPayment] = useState<CheckoutState | null>(null);
   const [checkInCard, setCheckInCard] = useState<BoardCard | null>(null);
 
@@ -250,12 +286,14 @@ export default function QueueBoard() {
   async function openTreatment(card: BoardCard) {
     setTreatmentCard(card);
     try {
-      const [result, products] = await Promise.all([
+      const [result, products, symptoms] = await Promise.all([
         apiRequest<TreatmentContext>(`/appointments/${card.appointmentId}/treatment-context`, { token }),
         apiRequest<CatalogItem[]>("/catalog/items?type=PRODUCT&status=ACTIVE&limit=100&sortBy=name&sortOrder=asc", { token }),
+        apiRequest<SymptomTag[]>("/treatment-symptoms?limit=100&sortBy=name&sortOrder=asc", { token }),
       ]);
       setTreatmentContext(result.data);
       setTreatmentProducts(products.data);
+      setTreatmentSymptoms(symptoms.data);
       setTreatmentResults(Object.fromEntries(result.data.items.map(item => [item.id, item.usageStatus === "USED" || item.usageStatus === "NOT_USED" ? item.usageStatus : "PENDING"])));
     } catch (error) {
       setTreatmentCard(null);
@@ -288,9 +326,9 @@ export default function QueueBoard() {
         method: "POST", token,
         body: JSON.stringify({
           doctorId: treatmentCard.doctor.id,
-          symptoms: String(form.get("symptoms") ?? "").split(",").map(value => value.trim()).filter(Boolean),
+          symptoms: JSON.parse(String(form.get("symptoms") || "[]")),
           treatmentDetail: form.get("treatmentDetail"),
-          treatmentAreas: form.getAll("treatmentAreas").map(String),
+          treatmentAreas: JSON.parse(String(form.get("treatmentAreas") || "[]")),
           medications: JSON.parse(String(form.get("medications") || "[]")),
           aftercareNote: form.get("aftercareNote") || undefined,
           itemResults: treatmentContext?.items.map(item => ({
@@ -306,6 +344,7 @@ export default function QueueBoard() {
       setTreatmentCard(null);
       setTreatmentContext(null);
       setTreatmentProducts([]);
+      setTreatmentSymptoms([]);
       setNotice({ kind: "success", text: addOns.length > 0 ? "บันทึกการรักษาแล้ว และเพิ่มยอด Add-on เข้าสถานะรอชำระเงิน" : "บันทึกการรักษาแล้ว" });
       await loadBoard(token, date, doctorId, search, true);
     } catch (error) {
@@ -490,7 +529,7 @@ export default function QueueBoard() {
           await loadBoard(token, date, doctorId, search, true);
         }}
       />}
-      {treatmentCard && <TreatmentDialog card={treatmentCard} context={treatmentContext} products={treatmentProducts} results={treatmentResults} busy={Boolean(busy)} setResult={(id, status) => setTreatmentResults(current => ({ ...current, [id]: status }))} close={() => { setTreatmentCard(null); setTreatmentContext(null); setTreatmentProducts([]); }} save={saveTreatment} />}
+      {treatmentCard && <TreatmentDialog card={treatmentCard} context={treatmentContext} products={treatmentProducts} symptoms={treatmentSymptoms} token={token} results={treatmentResults} busy={Boolean(busy)} setResult={(id, status) => setTreatmentResults(current => ({ ...current, [id]: status }))} close={() => { setTreatmentCard(null); setTreatmentContext(null); setTreatmentProducts([]); setTreatmentSymptoms([]); }} save={saveTreatment} />}
       {payment && <PaymentDialog value={payment} busy={Boolean(busy)} setValue={setPayment} close={() => setPayment(null)} save={savePayment} />}
     </main>
   );
@@ -750,21 +789,34 @@ function DetailDrawer({ card, catalog, entitlements, draft, busy, setDraft, clos
   </aside></div>;
 }
 
-function TreatmentDialog({ card, context, products, results, busy, setResult, close, save }: {
-  card: BoardCard; context: TreatmentContext | null; products: CatalogItem[]; results: Record<string, "PENDING" | "USED" | "NOT_USED">;
+function TreatmentDialog({ card, context, products, symptoms, token, results, busy, setResult, close, save }: {
+  card: BoardCard; context: TreatmentContext | null; products: CatalogItem[]; symptoms: SymptomTag[]; token: string; results: Record<string, "PENDING" | "USED" | "NOT_USED">;
   busy: boolean; setResult: (id: string, status: "USED" | "NOT_USED") => void; close: () => void;
   save: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const unresolved = context?.items.filter(item => (results[item.id] ?? "PENDING") === "PENDING").length ?? 0;
-  const [areas, setAreas] = useState<string[]>([]);
+  const [areas, setAreas] = useState<TreatmentArea[]>([]);
+  const [activeAreaType, setActiveAreaType] = useState<Exclude<TreatmentAreaType, "OTHER">>("FACE");
   const [formulaQuantities, setFormulaQuantities] = useState<Record<string, number>>({});
   const [addOnQuery, setAddOnQuery] = useState("");
   const [addOns, setAddOns] = useState<Record<string, number>>({});
   const [beforeImages, setBeforeImages] = useState<string[]>([]);
   const [afterImages, setAfterImages] = useState<string[]>([]);
-  const areaOptions = ["หน้าผาก", "จมูก", "รอบปาก", "คาง", "แก้มซ้าย", "แก้มขวา"];
+  const [symptomTags, setSymptomTags] = useState<SymptomTag[]>(symptoms);
+  const [selectedSymptoms, setSelectedSymptoms] = useState<SymptomTag[]>([]);
+  const [symptomQuery, setSymptomQuery] = useState("");
+  const [symptomOpen, setSymptomOpen] = useState(false);
+  const [symptomBusy, setSymptomBusy] = useState("");
+  const [symptomError, setSymptomError] = useState("");
+  const areaOptions = treatmentPartGroups[activeAreaType];
   const formulaProducts = context?.items.flatMap(item => item.products.map(product => ({ ...product, source: item.name }))) ?? [];
   const matchingProducts = products.filter(product => `${product.code} ${product.name}`.toLowerCase().includes(addOnQuery.trim().toLowerCase())).slice(0, 6);
+  const normalizedSymptomQuery = symptomQuery.trim().toLocaleLowerCase("th-TH");
+  const matchingSymptoms = symptomTags
+    .filter(tag => !selectedSymptoms.some(selected => selected.id === tag.id))
+    .filter(tag => !normalizedSymptomQuery || tag.name.toLocaleLowerCase("th-TH").includes(normalizedSymptomQuery))
+    .slice(0, 8);
+  const canCreateSymptom = Boolean(symptomQuery.trim()) && !symptomTags.some(tag => tag.name.toLocaleLowerCase("th-TH") === normalizedSymptomQuery);
   const selectedAddOns = products.filter(product => (addOns[product.id] ?? 0) > 0);
   const addOnTotal = selectedAddOns.reduce((sum, product) => sum + Number(product.finalPrice) * addOns[product.id], 0);
   const medications = [
@@ -786,10 +838,76 @@ function TreatmentDialog({ card, context, products, results, busy, setResult, cl
       kind: "ADD_ON",
     })),
   ];
-  const toggleArea = (area: string) => setAreas(current => current.includes(area) ? current.filter(value => value !== area) : [...current, area]);
+  const isAreaSelected = (type: TreatmentAreaType, part: string) => areas.some(area => area.type === type && area.part === part);
+  const toggleArea = (option: { part: string; partName: string }) => setAreas(current => {
+    const exists = current.some(area => area.type === activeAreaType && area.part === option.part);
+    return exists
+      ? current.filter(area => !(area.type === activeAreaType && area.part === option.part))
+      : [...current, { type: activeAreaType, part: option.part, partName: option.partName, detail: "" }];
+  });
+  const setAreaDetail = (target: TreatmentArea, detail: string) => setAreas(current => current.map(area =>
+    area.type === target.type && area.part === target.part ? { ...area, detail } : area,
+  ));
+  const removeArea = (target: TreatmentArea) => setAreas(current => current.filter(area =>
+    !(area.type === target.type && area.part === target.part),
+  ));
+  const hasIncompleteArea = areas.some(area => !area.detail.trim());
   const addPreviews = (files: FileList | null, setter: React.Dispatch<React.SetStateAction<string[]>>) => {
     if (!files) return;
     setter(current => [...current, ...Array.from(files).map(file => URL.createObjectURL(file))].slice(0, 4));
+  };
+  useEffect(() => {
+    const search = symptomQuery.trim();
+    if (!search) return;
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await apiRequest<SymptomTag[]>(`/treatment-symptoms?search=${encodeURIComponent(search)}&limit=20&sortBy=name&sortOrder=asc`, { token });
+        if (!active) return;
+        setSymptomTags(current => {
+          const merged = new Map(current.map(tag => [tag.id, tag]));
+          response.data.forEach(tag => merged.set(tag.id, tag));
+          return [...merged.values()];
+        });
+      } catch (error) {
+        if (active) setSymptomError(apiError(error));
+      }
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [symptomQuery, token]);
+  const createSymptom = async () => {
+    const name = symptomQuery.trim();
+    if (!name) return;
+    setSymptomBusy("create"); setSymptomError("");
+    try {
+      const response = await apiRequest<SymptomTag>("/treatment-symptoms", { method: "POST", token, body: JSON.stringify({ name }) });
+      setSymptomTags(current => [...current, response.data].sort((a, b) => a.name.localeCompare(b.name, "th")));
+      setSelectedSymptoms(current => [...current, response.data]);
+      setSymptomQuery("");
+      setSymptomOpen(false);
+    } catch (error) { setSymptomError(apiError(error)); }
+    finally { setSymptomBusy(""); }
+  };
+  const renameSymptom = async (tag: SymptomTag) => {
+    const name = window.prompt("เปลี่ยนชื่ออาการ / สภาวะ", tag.name)?.trim();
+    if (!name || name === tag.name) return;
+    setSymptomBusy(tag.id); setSymptomError("");
+    try {
+      const response = await apiRequest<SymptomTag>(`/treatment-symptoms/${tag.id}`, { method: "PATCH", token, body: JSON.stringify({ name }) });
+      setSymptomTags(current => current.map(value => value.id === tag.id ? response.data : value));
+      setSelectedSymptoms(current => current.map(value => value.id === tag.id ? response.data : value));
+    } catch (error) { setSymptomError(apiError(error)); }
+    finally { setSymptomBusy(""); }
+  };
+  const deleteSymptom = async (tag: SymptomTag) => {
+    if (!window.confirm(`ลบ tag “${tag.name}” ออกจากรายการกลาง? ประวัติที่เคยบันทึกไว้จะไม่ถูกลบ`)) return;
+    setSymptomBusy(tag.id); setSymptomError("");
+    try {
+      await apiRequest(`/treatment-symptoms/${tag.id}`, { method: "DELETE", token });
+      setSymptomTags(current => current.filter(value => value.id !== tag.id));
+      setSelectedSymptoms(current => current.filter(value => value.id !== tag.id));
+    } catch (error) { setSymptomError(apiError(error)); }
+    finally { setSymptomBusy(""); }
   };
 
   return <div className="treatment-page" onClick={close}><form className="treatment-record-page" onClick={event => event.stopPropagation()} onSubmit={save}>
@@ -828,9 +946,9 @@ function TreatmentDialog({ card, context, products, results, busy, setResult, cl
 
       <div className="treatment-main-grid">
         <main className="treatment-editor treatment-card">
-          <section><label>อาการ / สภาวะ *</label><div className="symptom-input"><input name="symptoms" placeholder="เช่น รอยแดง, ผิวหมองคล้ำ, สิวอุดตัน" /><span>คั่นแต่ละอาการด้วย comma</span></div></section>
+          <section><label>อาการ / สภาวะ *</label><div className="symptom-picker"><div className="symptom-selected">{selectedSymptoms.map(tag => <button type="button" key={tag.id} onClick={() => setSelectedSymptoms(current => current.filter(value => value.id !== tag.id))}>{tag.name}<span>×</span></button>)}<input value={symptomQuery} onFocus={() => setSymptomOpen(true)} onBlur={() => window.setTimeout(() => setSymptomOpen(false), 150)} onChange={event => { setSymptomQuery(event.target.value); setSymptomError(""); setSymptomOpen(true); }} placeholder={selectedSymptoms.length ? "ค้นหาเพิ่ม…" : "ค้นหาอาการหรือสภาวะ…"} /></div>{symptomOpen && (symptomQuery.trim() || matchingSymptoms.length > 0) && <div className="symptom-options">{matchingSymptoms.map(tag => <div key={tag.id}><button type="button" className="symptom-option-name" onClick={() => { setSelectedSymptoms(current => [...current, tag]); setSymptomQuery(""); setSymptomOpen(false); }}><span>＋</span>{tag.name}</button><button type="button" title="แก้ชื่อ" disabled={Boolean(symptomBusy)} onClick={() => void renameSymptom(tag)}>แก้ไข</button><button type="button" className="delete" title="ลบ tag" disabled={Boolean(symptomBusy)} onClick={() => void deleteSymptom(tag)}>ลบ</button></div>)}{canCreateSymptom && <button type="button" className="symptom-create" disabled={Boolean(symptomBusy)} onClick={() => void createSymptom()}>＋ สร้าง “{symptomQuery.trim()}”</button>}</div>}<small>เลือกได้หลายรายการ · ค้นหา สร้าง แก้ไข หรือลบ tag ได้จากช่องนี้</small>{symptomError && <em>{symptomError}</em>}<input type="hidden" name="symptoms" value={JSON.stringify(selectedSymptoms.map(tag => tag.name))} /></div></section>
           <section><label>รายละเอียดการรักษา *</label><textarea name="treatmentDetail" required placeholder="บันทึกสิ่งที่ตรวจพบ ขั้นตอนการรักษา ปริมาณ และผลระหว่างทำ…" /></section>
-          <section><label>ตำแหน่งที่รักษา *</label><div className="area-tabs"><button type="button" className="active">ใบหน้า</button><button type="button" disabled>ช่องปาก / ฟัน</button><button type="button" disabled>ร่างกาย</button></div><div className="face-map"><div className="face-outline"><span className="forehead">หน้าผาก</span><span className="nose">จมูก</span><span className="mouth">รอบปาก</span><span className="chin">คาง</span></div>{areaOptions.map(area => <label key={area} className={areas.includes(area) ? "selected" : ""}><input type="checkbox" name="treatmentAreas" value={area} checked={areas.includes(area)} onChange={() => toggleArea(area)} />{area}</label>)}</div><div className="selected-areas"><small>ตำแหน่งที่เลือก:</small>{areas.length ? areas.map(area => <span key={area}>{area} ×</span>) : <em>ยังไม่ได้เลือก</em>}</div></section>
+          <section><label>ตำแหน่งที่รักษา *</label><div className="area-tabs"><button type="button" className={activeAreaType === "FACE" ? "active" : ""} onClick={() => setActiveAreaType("FACE")}>ใบหน้า</button><button type="button" className={activeAreaType === "MOUTH" ? "active" : ""} onClick={() => setActiveAreaType("MOUTH")}>ช่องปาก / ฟัน</button><button type="button" className={activeAreaType === "BODY" ? "active" : ""} onClick={() => setActiveAreaType("BODY")}>ร่างกาย</button></div><div className={`area-part-selector ${activeAreaType === "FACE" ? "with-face" : ""}`}>{activeAreaType === "FACE" && <div className="face-outline" aria-hidden="true"><span className="forehead">หน้าผาก</span><span className="nose">จมูก</span><span className="mouth">ปาก</span><span className="chin">คาง</span></div>}<div className="area-part-grid">{areaOptions.map(option => <button type="button" key={`${activeAreaType}:${option.part}`} className={isAreaSelected(activeAreaType, option.part) ? "selected" : ""} onClick={() => toggleArea(option)}>{isAreaSelected(activeAreaType, option.part) ? "✓ " : "+ "}{option.partName}</button>)}</div></div><div className="area-detail-list"><div className="area-detail-heading"><b>รายละเอียดรายตำแหน่ง</b><small>ระบุอาการ สิ่งที่ตรวจพบ หรือการรักษาของแต่ละส่วน</small></div>{areas.length ? areas.map(area => <article key={`${area.type}:${area.part}`}><header><span>{area.partName}</span><small>{area.type === "FACE" ? "ใบหน้า" : area.type === "MOUTH" ? "ช่องปาก / ฟัน" : "ร่างกาย"}</small><button type="button" onClick={() => removeArea(area)}>ลบ</button></header><textarea value={area.detail} onChange={event => setAreaDetail(area, event.target.value)} required placeholder={`${area.partName}: รายละเอียดการรักษาหรืออาการ`} /></article>) : <div className="treatment-empty compact">เลือกส่วนที่รักษาจากรายการด้านบน</div>}</div><input type="hidden" name="treatmentAreas" value={JSON.stringify(areas)} /></section>
           <section className="medication-panel"><div className="subsection-heading"><div><h3>ยาและเวชภัณฑ์ตามรายการรักษา</h3><p>รายการจากสูตรบริการ ใช้เป็น snapshot ในบันทึกครั้งนี้</p></div></div>{!formulaProducts.length ? <div className="treatment-empty compact">ไม่มีสินค้าในสูตรบริการ</div> : <div className="medication-table"><header><span>ชื่อรายการ</span><span>แนะนำ</span><span>ใช้จริง</span><span>หน่วย</span></header>{formulaProducts.map(product => <div key={`${product.catalogItemId}-${product.source}`}><span><b>{product.name}</b><small>จาก {product.source}</small></span><span>{product.recommendedQuantity}</span><span className="qty-control"><button type="button" onClick={() => setFormulaQuantities(value => ({ ...value, [product.catalogItemId]: Math.max(0, (value[product.catalogItemId] ?? product.recommendedQuantity) - 1) }))}>−</button><b>{formulaQuantities[product.catalogItemId] ?? product.recommendedQuantity}</b><button type="button" onClick={() => setFormulaQuantities(value => ({ ...value, [product.catalogItemId]: (value[product.catalogItemId] ?? product.recommendedQuantity) + 1 }))}>+</button></span><span>{product.unit || "ชิ้น"}</span></div>)}</div>}</section>
           <section className="medication-panel add-on-panel"><div className="subsection-heading"><div><h3>ยาและเวชภัณฑ์เพิ่มเติม (Add-on)</h3><p>ค้นหาสินค้าใน Catalog เพื่อเพิ่มนอกเหนือจากสูตร และคิดยอดชำระแยก</p></div>{selectedAddOns.length > 0 && <span className="addon-payment-state">รอชำระ ฿{addOnTotal.toLocaleString("th-TH")}</span>}</div><div className="addon-search"><span>⌕</span><input value={addOnQuery} onChange={event => setAddOnQuery(event.target.value)} placeholder="ค้นหาชื่อยา สินค้า หรือรหัส…" /></div>{addOnQuery.trim() && <div className="addon-results">{matchingProducts.length ? matchingProducts.map(product => <button key={product.id} type="button" onClick={() => { setAddOns(value => ({ ...value, [product.id]: (value[product.id] ?? 0) + 1 })); setAddOnQuery(""); }}><span><b>{product.name}</b><small>{product.code} · stock {product.productDetail?.currentStock ?? 0} {product.productDetail?.unit || "ชิ้น"}</small></span><strong>฿{Number(product.finalPrice).toLocaleString("th-TH")}</strong><em>+ เพิ่ม</em></button>) : <p>ไม่พบสินค้าที่ค้นหา</p>}</div>}{selectedAddOns.length > 0 ? <div className="addon-cart"><header><span>รายการ</span><span>จำนวน</span><span>ราคา</span><span /></header>{selectedAddOns.map(product => <div key={product.id}><span><b>{product.name}</b><small>{product.code} · {product.productDetail?.unit || "ชิ้น"}</small></span><span className="qty-control"><button type="button" onClick={() => setAddOns(value => ({ ...value, [product.id]: Math.max(0, value[product.id] - 1) }))}>−</button><b>{addOns[product.id]}</b><button type="button" onClick={() => setAddOns(value => ({ ...value, [product.id]: value[product.id] + 1 }))}>+</button></span><strong>฿{(Number(product.finalPrice) * addOns[product.id]).toLocaleString("th-TH")}</strong><button type="button" className="addon-remove" onClick={() => setAddOns(value => ({ ...value, [product.id]: 0 }))}>ลบ</button></div>)}<footer><span>ยอด Add-on ที่ต้องชำระ</span><b>฿{addOnTotal.toLocaleString("th-TH")}</b></footer></div> : <div className="treatment-empty compact">ยังไม่มีรายการ Add-on</div>}</section>
           <section><label>คำแนะนำหลังการรักษา</label><textarea name="aftercareNote" placeholder="คำแนะนำ การดูแลตัวเอง และวันนัดครั้งถัดไป…" /></section>
@@ -841,7 +959,7 @@ function TreatmentDialog({ card, context, products, results, busy, setResult, cl
         <aside className="treatment-side">
           <section className="treatment-card photo-panel"><h3>ภาพการรักษา Before / After</h3><p>ตัวอย่าง UI — API จัดเก็บไฟล์ยังไม่พร้อม</p><label>ก่อนรักษา</label><div className="photo-grid">{beforeImages.map(image => <Image unoptimized width={160} height={160} key={image} src={image} alt="ก่อนรักษา" />)}<label className="photo-upload">＋<span>เพิ่มรูป</span><input type="file" accept="image/*" multiple onChange={event => addPreviews(event.target.files, setBeforeImages)} /></label></div><label>หลังรักษา</label><div className="photo-grid">{afterImages.map(image => <Image unoptimized width={160} height={160} key={image} src={image} alt="หลังรักษา" />)}<label className="photo-upload">＋<span>เพิ่มรูป</span><input type="file" accept="image/*" multiple onChange={event => addPreviews(event.target.files, setAfterImages)} /></label></div></section>
           <section className="treatment-card doctor-sign"><small>แพทย์ผู้รับรองการรักษา</small><strong>{card.doctor.name}</strong><span>{context.doctor?.licenseNo ? `เลขใบประกอบโรคศิลปะ: ${context.doctor.licenseNo}` : context.doctor?.specialty || "แพทย์ผู้รักษา"}</span></section>
-          <button className="treatment-submit" disabled={busy || unresolved > 0 || areas.length === 0}>{busy ? "กำลังบันทึก…" : unresolved > 0 ? `กรุณายืนยันอีก ${unresolved} รายการ` : areas.length === 0 ? "กรุณาเลือกตำแหน่งรักษา" : "จบการรักษา"}</button>
+          <button className="treatment-submit" disabled={busy || unresolved > 0 || areas.length === 0 || hasIncompleteArea || selectedSymptoms.length === 0}>{busy ? "กำลังบันทึก…" : unresolved > 0 ? `กรุณายืนยันอีก ${unresolved} รายการ` : selectedSymptoms.length === 0 ? "กรุณาเลือกอาการ / สภาวะ" : areas.length === 0 ? "กรุณาเลือกตำแหน่งรักษา" : hasIncompleteArea ? "กรุณากรอกรายละเอียดทุกตำแหน่ง" : "จบการรักษา"}</button>
           <p className="treatment-submit-note">การบันทึกจะยืนยันผลรายการรักษาและตัดสิทธิ์เฉพาะรายการที่เลือก “ใช้แล้ว”</p>
         </aside>
       </div>
