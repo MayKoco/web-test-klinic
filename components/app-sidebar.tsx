@@ -1,7 +1,7 @@
 "use client";
 
 type SidebarProps = {
-  active: "queue" | "scheduling" | "appointment" | "catalog" | "bundles" | "inventory" | "sales" | "reports" | "resources" | "schedule";
+  active: "queue" | "scheduling" | "appointment" | "catalog" | "bundles" | "inventory" | "sales" | "reports" | "resources" | "schedule" | "users";
   profile?: { name: string; clinicCode: string } | null;
 };
 
@@ -27,6 +27,7 @@ const groups = [
   {
     label: "ตั้งค่าคลินิก",
     items: [
+      { id: "users", href: "/users", icon: "♙", label: "ผู้ใช้งานและสิทธิ์" },
       { id: "resources", href: "/#resources", icon: "✚", label: "แพทย์และห้องตรวจ" },
       { id: "schedule", href: "/#schedule", icon: "⌁", label: "ตารางเวร" },
     ],

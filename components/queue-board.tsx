@@ -8,24 +8,60 @@ import { ApiClientError, apiRequest } from "@/lib/api";
 
 type BoardAction = "CHECK_IN" | "START" | "FINISH" | "COMPLETE" | "CANCEL";
 type SettlementMode = "PAYMENT" | "ENTITLEMENT" | "NO_CHARGE";
-type CatalogItem = { id: string; code: string; name: string; type: "PRODUCT" | "SERVICE" | "COURSE"; basePrice?: string; finalPrice: string; productDetail?: { unit?: string | null; currentStock?: number } };
+type TaxBreakdown = { taxableAmount: string; nonTaxableAmount: string; taxAmount: string; grossAmount: string };
+type CatalogItem = { id: string; code: string; name: string; type: "PRODUCT" | "SERVICE" | "COURSE"; basePrice?: string; finalPrice: string; taxBreakdown?: TaxBreakdown | null; productDetail?: { unit?: string | null; currentStock?: number }; serviceDetail?: { durationMinutes?: number | null }; courseDetail?: { sessionCount?: number | null } };
 type SymptomTag = { id: string; name: string; createdAt?: string; updatedAt?: string };
 type TreatmentAreaType = "FACE" | "BODY" | "MOUTH" | "OTHER";
 type TreatmentArea = { type: TreatmentAreaType; part: string; partName: string; detail: string };
+type TreatmentMediaType = "BEFORE" | "AFTER";
+type TreatmentMediaUpload = {
+  localId: string;
+  fileAssetId?: string;
+  previewUrl: string;
+  originalName: string;
+  type: TreatmentMediaType;
+  status: "UPLOADING" | "READY" | "ERROR";
+  error?: string;
+};
+type FileUploadUrl = {
+  file: { id: string };
+  upload: { method: "PUT"; url: string; headers: Record<string, string> };
+};
 type Entitlement = { id: string; catalogItemId: string; totalUnits: number; usedUnits: number; remainingUnits: number; expiresAt?: string; status: string };
 type AppointmentItem = { id: string; catalogItemId: string; name: string; type: string; quantity: number; settlementMode: SettlementMode; entitlementId?: string | null; usageStatus?: "PLANNED" | "PENDING" | "USED" | "NOT_USED"; resolutionNote?: string | null };
 type UnpaidSale = { id: string; status: string; balanceAmount: string };
 type SaleDetail = {
-  id: string; saleNo: string; status: string; subtotal: string; discountAmount: string; netAmount: string; balanceAmount: string; note?: string | null;
-  lines: { id: string; itemType: string; itemCodeSnapshot: string; itemNameSnapshot: string; quantity: number; unitBasePriceSnapshot: string; discountAmount: string; netAmount: string; components?: { id: string; componentType: string; nameSnapshot: string; quantity: number; allocatedNetAmount: string }[] }[];
+  id: string; saleNo: string; status: string; subtotal: string; discountAmount: string; taxableAmount: string; nonTaxableAmount: string; taxAmount: string; netAmount: string; balanceAmount: string; note?: string | null;
+  lines: { id: string; catalogItemId: string; source?: "CHECKOUT" | "TREATMENT_ADD_ON"; itemType: string; itemCodeSnapshot: string; itemNameSnapshot: string; quantity: number; unitBasePriceSnapshot: string; discountAmount: string; taxableAmount: string; nonTaxableAmount: string; taxAmount: string; netAmount: string; components?: { id: string; componentType: string; nameSnapshot: string; quantity: number; allocatedNetAmount: string }[] }[];
 };
-type CheckoutState = { card: BoardCard; saleId: string; amount: string; method: string; sale?: SaleDetail; context?: TreatmentContext | null };
+type CheckoutState = { card: BoardCard; saleId: string; amount: string; method: string; sale?: SaleDetail; context?: TreatmentContext | null; catalog: CatalogItem[]; checkoutLines: Record<string, number>; query: string; dirty: boolean };
+type ReceiptSnapshot = {
+  version: number;
+  receiptNo: string;
+  issuedAt: string;
+  clinic: { code: string; name: string; timezone: string };
+  patient?: { hn?: string; prefix?: string | null; firstName?: string; lastName?: string; phone?: string } | null;
+  sale: { saleNo: string; appointmentId?: string | null; subtotal: string; discountAmount: string; taxAmount: string; netAmount: string; paidAmount: string; balanceAmount: string };
+  lines: { itemType: string; itemCodeSnapshot: string; itemNameSnapshot: string; quantity: number; unitBasePriceSnapshot: string; discountAmount: string; taxableAmount: string; nonTaxableAmount: string; taxAmount: string; netAmount: string }[];
+  payments: { paymentNo: string; amount: string; method: string; reference?: string | null; paidAt: string }[];
+};
+type ReceiptData = { id: string; saleId: string; receiptNo: string; issuedAt: string; snapshot: ReceiptSnapshot };
+type UsageConfirmationSnapshot = {
+  version: number; confirmationNo: string; issuedAt: string;
+  clinic: { code: string; name: string; timezone: string };
+  patient: { hn: string; prefix?: string | null; firstName: string; lastName: string; phone: string };
+  appointment: { appointmentNo: string; date: string; startTime: string; doctor: { prefix?: string | null; firstName: string; lastName: string }; room: { name: string } };
+  usages: { usageId: string; code: string; name: string; unitsUsed: number; usageNumber: number; totalUnits: number; remainingUnits: number; usedAt: string; sourceSaleNo?: string | null; sourceReceiptNo?: string | null }[];
+  amountDue: string;
+};
+type UsageConfirmationData = { id: string; appointmentId: string; confirmationNo: string; issuedAt: string; snapshot: UsageConfirmationSnapshot };
 type BoardCard = {
   appointmentId: string;
   displayNo: string;
   appointmentNo: string;
   startTime: string;
   status: string;
+  appointmentType: "SCHEDULED" | "WALK_IN" | "URGENT_WALK_IN";
   patient: { id: string; hn: string; name: string; phone: string };
   doctor: { id: string; name: string };
   room: { id: string; name: string };
@@ -35,7 +71,9 @@ type BoardCard = {
   finishedAt?: string | null;
   completedAt?: string | null;
   treatmentRecorded: boolean;
-  settlement: { state: string; balanceAmount: string; unpaidSales?: UnpaidSale[] };
+  hasEntitlementUsage?: boolean;
+  usageConfirmation?: { id: string } | null;
+  settlement: { state: string; balanceAmount: string; unpaidSales?: UnpaidSale[]; receipts?: { saleId: string; receiptId: string }[] };
   blockingReasons: string[];
   availableActions: BoardAction[];
 };
@@ -44,6 +82,19 @@ type BoardData = {
   columns: { scheduled: BoardCard[]; waiting: BoardCard[]; inProgress: BoardCard[]; pendingClose: BoardCard[]; completed: BoardCard[] };
 };
 type Doctor = { id: string; prefix?: string; firstName: string; lastName: string };
+type Room = { id: string; roomCode: string; name: string; status: string };
+type PatientListItem = { id: string; hn: string; prefix?: string | null; firstName: string; lastName: string; phone: string };
+type UrgentAvailability = {
+  available: boolean;
+  currentDate: string;
+  currentTime: string;
+  currentSlot: string;
+  timezone: string;
+  blockers: { code: string; appointmentId: string }[];
+  warnings: string[];
+  waitingCount: number;
+  nextAppointment?: { id: string; appointmentNo: string; startTime: string } | null;
+};
 type PatientDetail = {
   id: string; hn: string; prefix?: string | null; firstName: string; lastName: string;
   phone: string; birthDate?: string | null; bloodGroup?: string | null;
@@ -76,9 +127,72 @@ type TreatmentContext = {
   doctor?: { id: string; prefix?: string | null; firstName?: string; lastName?: string; displayName?: string; licenseNo?: string | null; specialty?: string | null };
   room?: { id: string; roomCode?: string; name: string };
   latestVitals: VitalRecord | null;
-  treatmentRecord?: { id: string; symptoms?: unknown; treatmentDetail?: string; treatmentAreas?: unknown; medications?: unknown; aftercareNote?: string | null; createdAt?: string } | null;
+  treatmentRecord?: TreatmentRecordData | null;
   items: TreatmentContextItem[];
 };
+type TreatmentAddendum = { id: string; note: string; createdAt: string; createdBy: string };
+type SavedTreatmentMedia = {
+  id: string;
+  fileAssetId: string;
+  type: TreatmentMediaType;
+  sortOrder: number;
+  caption?: string | null;
+  originalName?: string;
+  mimeType?: string;
+  downloadUrl?: string;
+  fileAsset?: { id: string; originalName: string; mimeType: string };
+};
+type TreatmentRecordData = {
+  id: string;
+  version: number;
+  editableUntil: string;
+  symptoms?: unknown;
+  treatmentDetail: string;
+  treatmentAreas?: unknown;
+  medications?: unknown;
+  aftercareNote?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+  addenda?: TreatmentAddendum[];
+  media?: SavedTreatmentMedia[];
+};
+type TreatmentVersion = Omit<TreatmentRecordData, "editableUntil" | "addenda"> & {
+  treatmentRecordId: string;
+  changedAt: string;
+  changedBy: string;
+  changeReason?: string | null;
+  mediaSnapshot?: SavedTreatmentMedia[];
+};
+type TreatmentHistoryState = { card: BoardCard; record: TreatmentRecordData; versions: TreatmentVersion[] };
+
+async function hydrateTreatmentMedia(
+  record: TreatmentRecordData,
+  versions: TreatmentVersion[],
+  token: string,
+) {
+  const ids = new Set<string>();
+  record.media?.forEach(item => ids.add(item.fileAssetId));
+  versions.forEach(version => version.mediaSnapshot?.forEach(item => ids.add(item.fileAssetId)));
+  const urls = new Map<string, string>();
+  await Promise.all([...ids].map(async id => {
+    try {
+      const response = await apiRequest<{ url: string }>(`/files/${id}/download-url`, { token });
+      urls.set(id, response.data.url);
+    } catch {
+      // Historical metadata remains visible when an object cannot be opened.
+    }
+  }));
+  return {
+    record: {
+      ...record,
+      media: record.media?.map(item => ({ ...item, downloadUrl: urls.get(item.fileAssetId) })),
+    },
+    versions: versions.map(version => ({
+      ...version,
+      mediaSnapshot: version.mediaSnapshot?.map(item => ({ ...item, downloadUrl: urls.get(item.fileAssetId) })),
+    })),
+  };
+}
 
 const treatmentPartGroups: Record<Exclude<TreatmentAreaType, "OTHER">, { part: string; partName: string }[]> = {
   FACE: [
@@ -168,8 +282,12 @@ export default function QueueBoard() {
   const [treatmentResults, setTreatmentResults] = useState<Record<string, "PENDING" | "USED" | "NOT_USED">>({});
   const [treatmentProducts, setTreatmentProducts] = useState<CatalogItem[]>([]);
   const [treatmentSymptoms, setTreatmentSymptoms] = useState<SymptomTag[]>([]);
+  const [treatmentHistory, setTreatmentHistory] = useState<TreatmentHistoryState | null>(null);
   const [payment, setPayment] = useState<CheckoutState | null>(null);
+  const [receipt, setReceipt] = useState<ReceiptData | null>(null);
+  const [usageConfirmation, setUsageConfirmation] = useState<UsageConfirmationData | null>(null);
   const [checkInCard, setCheckInCard] = useState<BoardCard | null>(null);
+  const [urgentOpen, setUrgentOpen] = useState(false);
 
   const loadBoard = useCallback(async (accessToken: string, targetDate: string, targetDoctor = "", term = "", silent = false) => {
     if (!silent) setLoading(true);
@@ -288,7 +406,7 @@ export default function QueueBoard() {
     try {
       const [result, products, symptoms] = await Promise.all([
         apiRequest<TreatmentContext>(`/appointments/${card.appointmentId}/treatment-context`, { token }),
-        apiRequest<CatalogItem[]>("/catalog/items?type=PRODUCT&status=ACTIVE&limit=100&sortBy=name&sortOrder=asc", { token }),
+        apiRequest<CatalogItem[]>("/catalog/items?status=ACTIVE&limit=100&sortBy=name&sortOrder=asc", { token }),
         apiRequest<SymptomTag[]>("/treatment-symptoms?limit=100&sortBy=name&sortOrder=asc", { token }),
       ]);
       setTreatmentContext(result.data);
@@ -301,27 +419,75 @@ export default function QueueBoard() {
     }
   }
 
+  async function openTreatmentHistory(card: BoardCard) {
+    setBusy(`${card.appointmentId}:HISTORY`);
+    try {
+      const [record, versions] = await Promise.all([
+        apiRequest<TreatmentRecordData>(`/appointments/${card.appointmentId}/treatment`, { token }),
+        apiRequest<TreatmentVersion[]>(`/appointments/${card.appointmentId}/treatment/versions`, { token }),
+      ]);
+      const hydrated = await hydrateTreatmentMedia(record.data, versions.data, token);
+      setTreatmentHistory({ card, ...hydrated });
+    } catch (error) {
+      setNotice({ kind: "error", text: apiError(error) });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function refreshTreatmentHistory(card: BoardCard) {
+    const [record, versions] = await Promise.all([
+      apiRequest<TreatmentRecordData>(`/appointments/${card.appointmentId}/treatment`, { token }),
+      apiRequest<TreatmentVersion[]>(`/appointments/${card.appointmentId}/treatment/versions`, { token }),
+    ]);
+    const hydrated = await hydrateTreatmentMedia(record.data, versions.data, token);
+    setTreatmentHistory({ card, ...hydrated });
+  }
+
+  async function updateTreatmentHistory(payload: Record<string, unknown>) {
+    if (!treatmentHistory) return;
+    setBusy(`${treatmentHistory.card.appointmentId}:REVISION`);
+    try {
+      await apiRequest(`/appointments/${treatmentHistory.card.appointmentId}/treatment`, {
+        method: "PATCH",
+        token,
+        body: JSON.stringify(payload),
+      });
+      await refreshTreatmentHistory(treatmentHistory.card);
+      setNotice({ kind: "success", text: "บันทึกการแก้ไขเป็นเวอร์ชันใหม่แล้ว" });
+    } catch (error) {
+      setNotice({ kind: "error", text: apiError(error) });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function addTreatmentAddendum(note: string) {
+    if (!treatmentHistory) return;
+    setBusy(`${treatmentHistory.card.appointmentId}:ADDENDUM`);
+    try {
+      await apiRequest(`/appointments/${treatmentHistory.card.appointmentId}/treatment/addenda`, {
+        method: "POST",
+        token,
+        body: JSON.stringify({ note }),
+      });
+      await refreshTreatmentHistory(treatmentHistory.card);
+      setNotice({ kind: "success", text: "เพิ่มหมายเหตุเพิ่มเติมแล้ว" });
+    } catch (error) {
+      setNotice({ kind: "error", text: apiError(error) });
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function saveTreatment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!treatmentCard) return;
     const form = new FormData(event.currentTarget);
     const addOns = JSON.parse(String(form.get("addOns") || "[]")) as { itemId: string; quantity: number }[];
+    const media = JSON.parse(String(form.get("media") || "[]")) as { fileAssetId: string; type: TreatmentMediaType; sortOrder: number }[];
     setBusy(`${treatmentCard.appointmentId}:TREATMENT`);
-    let addOnSaleId = "";
     try {
-      if (addOns.length > 0) {
-        const created = await apiRequest<{ id: string }>("/sales", {
-          method: "POST", token,
-          body: JSON.stringify({
-            patientId: treatmentCard.patient.id,
-            appointmentId: treatmentCard.appointmentId,
-            note: `Treatment add-on · ${treatmentCard.appointmentNo}`,
-            lines: addOns.map(item => ({ itemType: "CATALOG", itemId: item.itemId, quantity: item.quantity })),
-          }),
-        });
-        addOnSaleId = created.data.id;
-        await apiRequest(`/sales/${addOnSaleId}/confirm`, { method: "POST", token });
-      }
       await apiRequest(`/appointments/${treatmentCard.appointmentId}/treatment`, {
         method: "POST", token,
         body: JSON.stringify({
@@ -330,6 +496,8 @@ export default function QueueBoard() {
           treatmentDetail: form.get("treatmentDetail"),
           treatmentAreas: JSON.parse(String(form.get("treatmentAreas") || "[]")),
           medications: JSON.parse(String(form.get("medications") || "[]")),
+          ...(addOns.length ? { addOns } : {}),
+          ...(media.length ? { media } : {}),
           aftercareNote: form.get("aftercareNote") || undefined,
           itemResults: treatmentContext?.items.map(item => ({
             appointmentItemId: item.id,
@@ -338,19 +506,13 @@ export default function QueueBoard() {
           })),
         }),
       });
-      if (treatmentCard.status === "IN_PROGRESS") {
-        await apiRequest(`/appointments/${treatmentCard.appointmentId}/finish`, { method: "POST", token });
-      }
       setTreatmentCard(null);
       setTreatmentContext(null);
       setTreatmentProducts([]);
       setTreatmentSymptoms([]);
-      setNotice({ kind: "success", text: addOns.length > 0 ? "บันทึกการรักษาแล้ว และเพิ่มยอด Add-on เข้าสถานะรอชำระเงิน" : "บันทึกการรักษาแล้ว" });
+      setNotice({ kind: "success", text: addOns.length > 0 ? "บันทึกการรักษาแล้ว สร้าง Bill ร่างและส่งไปรอชำระเงิน" : "บันทึกการรักษาแล้ว" });
       await loadBoard(token, date, doctorId, search, true);
     } catch (error) {
-      if (addOnSaleId) {
-        try { await apiRequest(`/sales/${addOnSaleId}/void`, { method: "POST", token, body: JSON.stringify({ reason: "ยกเลิกอัตโนมัติ เนื่องจากบันทึกการรักษาไม่สำเร็จ" }) }); } catch { /* retain original error */ }
-      }
       setNotice({ kind: "error", text: apiError(error) });
     }
     finally { setBusy(""); }
@@ -388,15 +550,42 @@ export default function QueueBoard() {
             lines: paymentItems.map(item => ({ itemType: "CATALOG", itemId: item.catalogItemId, quantity: item.quantity })),
           }),
         });
-        const confirmed = await apiRequest<{ id: string; balanceAmount: string }>(`/sales/${created.data.id}/confirm`, { method: "POST", token });
-        saleId = confirmed.data.id;
-        amount = confirmed.data.balanceAmount;
+        saleId = created.data.id;
+        amount = created.data.netAmount;
       }
-      const [saleDetail, treatmentDetail] = await Promise.all([
+      const [saleDetail, treatmentDetail, products] = await Promise.all([
         apiRequest<SaleDetail>(`/sales/${saleId}`, { token }),
         apiRequest<TreatmentContext>(`/appointments/${card.appointmentId}/treatment-context`, { token }).catch(() => ({ data: null })),
+        apiRequest<CatalogItem[]>("/catalog/items?type=PRODUCT&status=ACTIVE&limit=100&sortBy=name&sortOrder=asc", { token }),
       ]);
-      setPayment({ card, saleId, amount, method: "QR", sale: saleDetail.data, context: treatmentDetail.data });
+      const checkoutLines = Object.fromEntries(
+        saleDetail.data.lines
+          .filter(line => line.source !== "TREATMENT_ADD_ON")
+          .map(line => [line.catalogItemId, line.quantity]),
+      );
+      setPayment({ card, saleId, amount, method: "QR", sale: saleDetail.data, context: treatmentDetail.data, catalog: products.data, checkoutLines, query: "", dirty: false });
+      await loadBoard(token, date, doctorId, search, true);
+    } catch (error) { setNotice({ kind: "error", text: apiError(error) }); }
+    finally { setBusy(""); }
+  }
+
+  async function saveCheckoutDraft(confirm = false) {
+    if (!payment) return;
+    setBusy(`${payment.card.appointmentId}:CHECKOUT_DRAFT`);
+    try {
+      const lines = Object.entries(payment.checkoutLines)
+        .filter(([, quantity]) => quantity > 0)
+        .map(([itemId, quantity]) => ({ itemType: "CATALOG", itemId, quantity }));
+      const updated = await apiRequest<SaleDetail>(`/sales/${payment.saleId}`, {
+        method: "PATCH",
+        token,
+        body: JSON.stringify({ lines }),
+      });
+      const sale = confirm
+        ? (await apiRequest<SaleDetail>(`/sales/${payment.saleId}/confirm`, { method: "POST", token })).data
+        : updated.data;
+      setPayment(current => current ? { ...current, sale, amount: sale.balanceAmount, dirty: false } : current);
+      setNotice({ kind: "success", text: confirm ? "ยืนยันยอดแล้ว พร้อมรับชำระเงิน" : "บันทึกรายการใน Bill แล้ว" });
       await loadBoard(token, date, doctorId, search, true);
     } catch (error) { setNotice({ kind: "error", text: apiError(error) }); }
     finally { setBusy(""); }
@@ -405,16 +594,44 @@ export default function QueueBoard() {
   async function savePayment(event: FormEvent) {
     event.preventDefault();
     if (!payment) return;
+    if (payment.sale?.status === "DRAFT") {
+      setNotice({ kind: "error", text: "กรุณายืนยันยอดชำระก่อนรับเงิน" });
+      return;
+    }
     setBusy(`${payment.card.appointmentId}:PAYMENT_SAVE`);
     try {
-      await apiRequest(`/sales/${payment.saleId}/payments`, {
+      const result = await apiRequest<{ receipt: ReceiptData | null }>(`/sales/${payment.saleId}/payments`, {
         method: "POST", token,
         headers: { "Idempotency-Key": crypto.randomUUID() },
         body: JSON.stringify({ amount: Number(payment.amount), method: payment.method, paidAt: new Date().toISOString() }),
       });
       setPayment(null);
-      setNotice({ kind: "success", text: "บันทึกรับชำระแล้ว" });
+      setReceipt(result.data.receipt);
+      setNotice({ kind: "success", text: result.data.receipt ? `รับชำระและออกใบเสร็จ ${result.data.receipt.receiptNo} แล้ว` : "บันทึกรับชำระแล้ว" });
       await loadBoard(token, date, doctorId, search, true);
+    } catch (error) { setNotice({ kind: "error", text: apiError(error) }); }
+    finally { setBusy(""); }
+  }
+
+  async function openReceipt(card: BoardCard) {
+    const saleId = card.settlement.receipts?.at(-1)?.saleId;
+    if (!saleId) return;
+    setBusy(`${card.appointmentId}:RECEIPT`);
+    try {
+      const result = await apiRequest<ReceiptData>(`/sales/${saleId}/receipt`, { token });
+      setReceipt(result.data);
+    } catch (error) { setNotice({ kind: "error", text: apiError(error) }); }
+    finally { setBusy(""); }
+  }
+
+  async function openUsageConfirmation(card: BoardCard) {
+    setBusy(`${card.appointmentId}:USAGE_CONFIRMATION`);
+    try {
+      const result = await apiRequest<UsageConfirmationData>(`/appointments/${card.appointmentId}/usage-confirmation`, {
+        method: card.usageConfirmation ? "GET" : "POST",
+        token,
+      });
+      setUsageConfirmation(result.data);
     } catch (error) { setNotice({ kind: "error", text: apiError(error) }); }
     finally { setBusy(""); }
   }
@@ -452,7 +669,10 @@ export default function QueueBoard() {
               {doctors.map(doctor => <option key={doctor.id} value={doctor.id}>{doctor.prefix}{doctor.firstName} {doctor.lastName}</option>)}
             </select>
             <label className="queue-search"><span>⌕</span><input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="ค้นหาชื่อ, HN, เบอร์โทร…" /></label>
-            <Link className="primary-button walkin-button" href="/#appointment-form">+ Walk-in / นัดหมาย</Link>
+            <div className="queue-create-actions">
+              <Link className="soft-button walkin-button" href="/#appointment-form">+ Walk-in / นัดหมาย</Link>
+              <button className="primary-button urgent-walkin-button" type="button" onClick={() => setUrgentOpen(true)}>+ Walk-in เร่งด่วน</button>
+            </div>
           </section>
 
           <section className="queue-overview">
@@ -494,8 +714,11 @@ export default function QueueBoard() {
                       onDetails={() => void openDetails(card)}
                       onAction={action => void runAction(card, action)}
                       onTreatment={() => void openTreatment(card)}
+                      onHistory={() => void openTreatmentHistory(card)}
                       onEntitlement={() => void consumeEntitlements(card)}
                       onPayment={() => void preparePayment(card)}
+                      onReceipt={() => void openReceipt(card)}
+                      onUsageConfirmation={() => void openUsageConfirmation(card)}
                     />
                   ))}
                 </div>
@@ -530,15 +753,180 @@ export default function QueueBoard() {
         }}
       />}
       {treatmentCard && <TreatmentDialog card={treatmentCard} context={treatmentContext} products={treatmentProducts} symptoms={treatmentSymptoms} token={token} results={treatmentResults} busy={Boolean(busy)} setResult={(id, status) => setTreatmentResults(current => ({ ...current, [id]: status }))} close={() => { setTreatmentCard(null); setTreatmentContext(null); setTreatmentProducts([]); setTreatmentSymptoms([]); }} save={saveTreatment} />}
-      {payment && <PaymentDialog value={payment} busy={Boolean(busy)} setValue={setPayment} close={() => setPayment(null)} save={savePayment} />}
+      {treatmentHistory && <TreatmentHistoryDialog key={treatmentHistory.record.version} value={treatmentHistory} busy={Boolean(busy)} close={() => setTreatmentHistory(null)} update={updateTreatmentHistory} addendum={addTreatmentAddendum} />}
+      {payment && <PaymentDialog value={payment} busy={Boolean(busy)} setValue={setPayment} close={() => setPayment(null)} saveDraft={() => void saveCheckoutDraft(false)} confirm={() => void saveCheckoutDraft(true)} save={savePayment} />}
+      {receipt && <ReceiptDialog receipt={receipt} close={() => setReceipt(null)} />}
+      {usageConfirmation && <UsageConfirmationDialog confirmation={usageConfirmation} close={() => setUsageConfirmation(null)} />}
+      {urgentOpen && <UrgentWalkInDialog
+        token={token}
+        doctors={doctors}
+        close={() => setUrgentOpen(false)}
+        completed={async appointmentDate => {
+          setUrgentOpen(false);
+          setDate(appointmentDate);
+          setNotice({ kind: "success", text: "เพิ่ม Walk-in เร่งด่วนเข้าคิวรอรักษาแล้ว" });
+          await loadBoard(token, appointmentDate, doctorId, search, true);
+        }}
+      />}
     </main>
   );
 }
 
-function QueueCard({ card, now, busy, onDetails, onAction, onTreatment, onEntitlement, onPayment }: {
+function UrgentWalkInDialog({ token, doctors, close, completed }: {
+  token: string;
+  doctors: Doctor[];
+  close: () => void;
+  completed: (appointmentDate: string) => Promise<void>;
+}) {
+  const [patients, setPatients] = useState<PatientListItem[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [patientSearch, setPatientSearch] = useState("");
+  const [patientId, setPatientId] = useState("");
+  const [doctorId, setDoctorId] = useState("");
+  const [roomId, setRoomId] = useState("");
+  const [chiefComplaint, setChiefComplaint] = useState("");
+  const [staffNote, setStaffNote] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const [availability, setAvailability] = useState<UrgentAvailability | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      apiRequest<PatientListItem[]>("/patients?limit=100&sortBy=firstName&sortOrder=asc", { token }),
+      apiRequest<Room[]>("/rooms?limit=100&sortBy=name&sortOrder=asc&status=ACTIVE", { token }),
+    ]).then(([patientResponse, roomResponse]) => {
+      if (!active) return;
+      setPatients(patientResponse.data);
+      setRooms(roomResponse.data);
+    }).catch(value => {
+      if (active) setError(apiError(value));
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [token]);
+
+  useEffect(() => {
+    if (!doctorId || !roomId) {
+      queueMicrotask(() => setAvailability(null));
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      setChecking(true);
+      setError("");
+      try {
+        const params = new URLSearchParams({ doctorId, roomId });
+        if (patientId) params.set("patientId", patientId);
+        const response = await apiRequest<UrgentAvailability>(`/appointments/urgent-walk-in-availability?${params}`, { token });
+        if (active) setAvailability(response.data);
+      } catch (value) {
+        if (active) {
+          setAvailability(null);
+          setError(apiError(value));
+        }
+      } finally {
+        if (active) setChecking(false);
+      }
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [doctorId, roomId, patientId, token]);
+
+  const visiblePatients = patients.filter(patient => {
+    const term = patientSearch.trim().toLocaleLowerCase("th-TH");
+    if (!term) return true;
+    return `${patient.hn} ${patient.prefix ?? ""}${patient.firstName} ${patient.lastName} ${patient.phone}`.toLocaleLowerCase("th-TH").includes(term);
+  });
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!availability?.available || !confirmed) return;
+    setSaving(true);
+    setError("");
+    try {
+      const response = await apiRequest<{ date: string }>("/appointments/urgent-walk-ins", {
+        method: "POST",
+        token,
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({
+          patientId,
+          doctorId,
+          roomId,
+          doctorAvailabilityConfirmed: true,
+          chiefComplaint: chiefComplaint || undefined,
+          staffNote: staffNote || undefined,
+        }),
+      });
+      await completed(response.data.date.slice(0, 10));
+    } catch (value) {
+      setError(apiError(value));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="drawer-backdrop checkin-backdrop" role="presentation" onClick={close}>
+      <form className="queue-dialog urgent-walkin-dialog" onClick={event => event.stopPropagation()} onSubmit={submit}>
+        <header>
+          <div><p className="eyebrow">URGENT WALK-IN</p><h2>เพิ่มคิวเร่งด่วน</h2><span>ใช้เมื่อแพทย์ยืนยันว่ารับผู้ป่วยแทรกระหว่างคิวได้</span></div>
+          <button type="button" onClick={close} aria-label="ปิด">×</button>
+        </header>
+
+        {error && <div className="urgent-state blocked"><b>ยังสร้างคิวไม่ได้</b><span>{error}</span></div>}
+        {loading ? <QueueEmpty text="กำลังโหลดข้อมูล…" /> : <>
+          <section className="urgent-form-grid">
+            <label className="urgent-patient-picker"><span>ค้นหาผู้รับบริการ</span><input value={patientSearch} onChange={event => setPatientSearch(event.target.value)} placeholder="ชื่อ, HN หรือเบอร์โทร" /></label>
+            <label className="urgent-patient-picker"><span>ผู้รับบริการ *</span><select required value={patientId} onChange={event => setPatientId(event.target.value)}><option value="">เลือกผู้รับบริการ</option>{visiblePatients.map(patient => <option key={patient.id} value={patient.id}>{patient.hn} · {patient.prefix}{patient.firstName} {patient.lastName}</option>)}</select></label>
+            <label><span>แพทย์ *</span><select required value={doctorId} onChange={event => setDoctorId(event.target.value)}><option value="">เลือกแพทย์</option>{doctors.map(doctor => <option key={doctor.id} value={doctor.id}>{doctor.prefix}{doctor.firstName} {doctor.lastName}</option>)}</select></label>
+            <label><span>ห้อง *</span><select required value={roomId} onChange={event => setRoomId(event.target.value)}><option value="">เลือกห้อง</option>{rooms.map(room => <option key={room.id} value={room.id}>{room.roomCode} · {room.name}</option>)}</select></label>
+          </section>
+
+          <section className="urgent-availability">
+            {!doctorId || !roomId ? <div className="urgent-state neutral"><b>รอตรวจสอบความพร้อม</b><span>เลือกแพทย์และห้องก่อน</span></div> : checking ? <div className="urgent-state neutral"><b>กำลังตรวจสอบ…</b><span>ตรวจเวร ห้อง วันหยุด และคิวที่กำลังรักษา</span></div> : availability && <div className={`urgent-state ${availability.available ? "ready" : "blocked"}`}>
+              <b>{availability.available ? "รับคิวเร่งด่วนได้" : "ยังรับคิวเร่งด่วนไม่ได้"}</b>
+              <span>เวลาคลินิก {availability.currentTime} น. · slot {availability.currentSlot} น.</span>
+              {availability.nextAppointment && <span>นัดถัดไป {availability.nextAppointment.startTime} น. ({availability.nextAppointment.appointmentNo})</span>}
+              {availability.waitingCount > 0 && <span>มีคิวรอแพทย์ท่านนี้ {availability.waitingCount} คิว</span>}
+              {availability.blockers.map(blocker => <span key={`${blocker.code}:${blocker.appointmentId}`}>• {urgentBlockerLabel(blocker.code)}</span>)}
+              {availability.warnings.map(warning => <span key={warning}>⚠ {urgentWarningLabel(warning)}</span>)}
+            </div>}
+          </section>
+
+          <label><span>อาการ / เหตุผลที่มา</span><textarea value={chiefComplaint} onChange={event => setChiefComplaint(event.target.value)} placeholder="ข้อมูลสั้น ๆ สำหรับทีมรักษา" /></label>
+          <label><span>หมายเหตุพนักงาน</span><textarea value={staffNote} onChange={event => setStaffNote(event.target.value)} placeholder="เช่น แพทย์อนุมัติให้แทรกหลังเคสปัจจุบัน" /></label>
+          <label className="urgent-confirm"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /><span><b>แพทย์ยืนยันรับคิวนี้แล้ว</b><small>ระบบจะเพิ่มผู้รับบริการเข้าสถานะ “รอรักษา” ทันที โดยไม่จอง slot ใหม่</small></span></label>
+        </>}
+
+        <footer><button type="button" className="soft-button" onClick={close}>ยกเลิก</button><button className="primary-button" disabled={saving || checking || !patientId || !availability?.available || !confirmed}>{saving ? "กำลังเพิ่มคิว…" : "ยืนยันเพิ่มคิวเร่งด่วน"}</button></footer>
+      </form>
+    </div>
+  );
+}
+
+function urgentBlockerLabel(code: string) {
+  return ({
+    DOCTOR_CURRENTLY_BUSY: "แพทย์กำลังรักษาผู้รับบริการรายอื่น",
+    ROOM_CURRENTLY_OCCUPIED: "ห้องกำลังใช้งาน",
+    PATIENT_ALREADY_IN_TREATMENT: "ผู้รับบริการอยู่ระหว่างการรักษา",
+  } as Record<string, string>)[code] ?? code;
+}
+
+function urgentWarningLabel(code: string) {
+  return ({
+    DOCTOR_HAS_WAITING_QUEUE: "แพทย์มีคิวรออยู่แล้ว โปรดแจ้งลำดับคิวกับผู้รับบริการ",
+    NEXT_APPOINTMENT_WITHIN_30_MINUTES: "มีนัดถัดไปภายใน 30 นาที",
+  } as Record<string, string>)[code] ?? code;
+}
+
+function QueueCard({ card, now, busy, onDetails, onAction, onTreatment, onHistory, onEntitlement, onPayment, onReceipt, onUsageConfirmation }: {
   card: BoardCard; now: number; busy: boolean; onDetails: () => void;
   onAction: (action: Exclude<BoardAction, "CANCEL">) => void;
-  onTreatment: () => void; onEntitlement: () => void; onPayment: () => void;
+  onTreatment: () => void; onHistory: () => void; onEntitlement: () => void; onPayment: () => void; onReceipt: () => void; onUsageConfirmation: () => void;
 }) {
   const since = card.status === "WAITING"
     ? card.checkedInAt
@@ -550,7 +938,7 @@ function QueueCard({ card, now, busy, onDetails, onAction, onTreatment, onEntitl
   const primary = card.availableActions.find(action => action !== "CANCEL");
   return (
     <article className="queue-card">
-      <div className="queue-card-top"><span>{card.displayNo}</span><StatusBadge card={card} /></div>
+      <div className="queue-card-top"><span>{card.displayNo}</span><div className="queue-card-badges">{card.appointmentType === "URGENT_WALK_IN" && <b className="urgent-badge">เร่งด่วน</b>}<StatusBadge card={card} /></div></div>
       <h3>{card.patient.name}</h3>
       <p>{card.startTime} · {card.doctor.name}</p>
       <p>{card.room.name}</p>
@@ -560,9 +948,12 @@ function QueueCard({ card, now, busy, onDetails, onAction, onTreatment, onEntitl
       <div className="queue-card-actions">
         <button className="soft-button" onClick={onDetails}>รายละเอียด</button>
         {card.status === "IN_PROGRESS" && !card.treatmentRecorded && <button className="soft-button" onClick={onTreatment}>บันทึก</button>}
+        {card.treatmentRecorded && <button className="soft-button" onClick={onHistory}>ผลรักษา / เวอร์ชัน</button>}
         {card.blockingReasons.includes("TREATMENT_REQUIRED") && <button className="primary-action" onClick={onTreatment}>บันทึกการรักษา</button>}
         {card.blockingReasons.includes("ENTITLEMENT_REQUIRED") && <button className="primary-action" disabled={busy} onClick={onEntitlement}>ใช้สิทธิ์</button>}
-        {card.blockingReasons.includes("PAYMENT_REQUIRED") && <button className="primary-action" disabled={busy} onClick={onPayment}>รับชำระ</button>}
+        {card.blockingReasons.includes("PAYMENT_REQUIRED") && <button className="primary-action" disabled={busy} onClick={onPayment}>จัดรายการ / ชำระ</button>}
+        {!!card.settlement.receipts?.length && <button className="soft-button" disabled={busy} onClick={onReceipt}>ใบเสร็จ</button>}
+        {card.hasEntitlementUsage && <button className="soft-button" disabled={busy} onClick={onUsageConfirmation}>ใบยืนยันใช้สิทธิ์</button>}
         {primary && <button className="primary-action" disabled={busy} onClick={() => onAction(primary as Exclude<BoardAction, "CANCEL">)}>{actionConfig[primary]?.label}</button>}
       </div>
     </article>
@@ -800,8 +1191,7 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
   const [formulaQuantities, setFormulaQuantities] = useState<Record<string, number>>({});
   const [addOnQuery, setAddOnQuery] = useState("");
   const [addOns, setAddOns] = useState<Record<string, number>>({});
-  const [beforeImages, setBeforeImages] = useState<string[]>([]);
-  const [afterImages, setAfterImages] = useState<string[]>([]);
+  const [mediaUploads, setMediaUploads] = useState<TreatmentMediaUpload[]>([]);
   const [symptomTags, setSymptomTags] = useState<SymptomTag[]>(symptoms);
   const [selectedSymptoms, setSelectedSymptoms] = useState<SymptomTag[]>([]);
   const [symptomQuery, setSymptomQuery] = useState("");
@@ -809,7 +1199,7 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
   const [symptomBusy, setSymptomBusy] = useState("");
   const [symptomError, setSymptomError] = useState("");
   const areaOptions = treatmentPartGroups[activeAreaType];
-  const formulaProducts = context?.items.flatMap(item => item.products.map(product => ({ ...product, source: item.name }))) ?? [];
+  const formulaProducts = context?.items.flatMap(item => item.products.map(product => ({ ...product, source: item.name, sourceAppointmentItemId: item.id }))) ?? [];
   const matchingProducts = products.filter(product => `${product.code} ${product.name}`.toLowerCase().includes(addOnQuery.trim().toLowerCase())).slice(0, 6);
   const normalizedSymptomQuery = symptomQuery.trim().toLocaleLowerCase("th-TH");
   const matchingSymptoms = symptomTags
@@ -819,16 +1209,25 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
   const canCreateSymptom = Boolean(symptomQuery.trim()) && !symptomTags.some(tag => tag.name.toLocaleLowerCase("th-TH") === normalizedSymptomQuery);
   const selectedAddOns = products.filter(product => (addOns[product.id] ?? 0) > 0);
   const addOnTotal = selectedAddOns.reduce((sum, product) => sum + Number(product.finalPrice) * addOns[product.id], 0);
+  const addOnBreakdown = selectedAddOns.reduce((totals, product) => {
+    const quantity = addOns[product.id];
+    totals.procedure += Number(product.taxBreakdown?.nonTaxableAmount ?? 0) * quantity;
+    totals.goodsBeforeVat += Number(product.taxBreakdown?.taxableAmount ?? 0) * quantity;
+    totals.vat += Number(product.taxBreakdown?.taxAmount ?? 0) * quantity;
+    return totals;
+  }, { procedure: 0, goodsBeforeVat: 0, vat: 0 });
+  const money = (amount: number) => new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(amount);
   const medications = [
     ...formulaProducts.map(product => ({
       catalogItemId: product.catalogItemId,
       name: product.name,
-      quantity: formulaQuantities[product.catalogItemId] ?? product.recommendedQuantity,
+      quantity: formulaQuantities[`${product.sourceAppointmentItemId}:${product.catalogItemId}`] ?? product.recommendedQuantity,
       unit: product.unit || "ชิ้น",
       source: product.source,
+      sourceAppointmentItemId: product.sourceAppointmentItemId,
       kind: "FORMULA",
     })),
-    ...selectedAddOns.map(product => ({
+    ...selectedAddOns.filter(product => product.type === "PRODUCT").map(product => ({
       catalogItemId: product.id,
       name: product.name,
       quantity: addOns[product.id],
@@ -852,9 +1251,78 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
     !(area.type === target.type && area.part === target.part),
   ));
   const hasIncompleteArea = areas.some(area => !area.detail.trim());
-  const addPreviews = (files: FileList | null, setter: React.Dispatch<React.SetStateAction<string[]>>) => {
+  const uploadTreatmentMedia = async (files: FileList | null, type: TreatmentMediaType) => {
     if (!files) return;
-    setter(current => [...current, ...Array.from(files).map(file => URL.createObjectURL(file))].slice(0, 4));
+    const remaining = Math.max(0, 4 - mediaUploads.filter(item => item.type === type).length);
+    const selected = Array.from(files).slice(0, remaining);
+    const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+    const entries = selected.map(file => ({
+      file,
+      upload: {
+        localId: crypto.randomUUID(),
+        previewUrl: URL.createObjectURL(file),
+        originalName: file.name,
+        type,
+        status: "UPLOADING" as const,
+      },
+    }));
+    setMediaUploads(current => [...current, ...entries.map(entry => entry.upload)]);
+
+    await Promise.all(entries.map(async ({ file, upload }) => {
+      let fileAssetId: string | undefined;
+      try {
+        if (!allowed.has(file.type)) throw new Error("รองรับเฉพาะ JPG, PNG และ WebP");
+        if (file.size > 10 * 1024 * 1024) throw new Error("รูปต้องมีขนาดไม่เกิน 10 MB");
+        const prepared = await apiRequest<FileUploadUrl>("/files/upload-url", {
+          method: "POST",
+          token,
+          body: JSON.stringify({
+            purpose: "TREATMENT_MEDIA",
+            originalName: file.name,
+            mimeType: file.type,
+            sizeBytes: file.size,
+          }),
+        });
+        fileAssetId = prepared.data.file.id;
+        const uploaded = await fetch(prepared.data.upload.url, {
+          method: prepared.data.upload.method,
+          headers: prepared.data.upload.headers,
+          body: file,
+        });
+        if (!uploaded.ok) throw new Error(`อัปโหลด Storage ไม่สำเร็จ (${uploaded.status})`);
+        await apiRequest(`/files/${fileAssetId}/complete`, { method: "POST", token });
+        setMediaUploads(current => current.map(item => item.localId === upload.localId
+          ? { ...item, fileAssetId, status: "READY", error: undefined }
+          : item));
+      } catch (error) {
+        if (fileAssetId) {
+          await apiRequest(`/files/${fileAssetId}`, { method: "DELETE", token }).catch(() => undefined);
+        }
+        setMediaUploads(current => current.map(item => item.localId === upload.localId
+          ? { ...item, status: "ERROR", error: apiError(error) }
+          : item));
+      }
+    }));
+  };
+  const removeTreatmentMedia = async (item: TreatmentMediaUpload) => {
+    if (item.fileAssetId) {
+      await apiRequest(`/files/${item.fileAssetId}`, { method: "DELETE", token }).catch(() => undefined);
+    }
+    URL.revokeObjectURL(item.previewUrl);
+    setMediaUploads(current => current.filter(value => value.localId !== item.localId));
+  };
+  const beforeImages = mediaUploads.filter(item => item.type === "BEFORE");
+  const afterImages = mediaUploads.filter(item => item.type === "AFTER");
+  const mediaUploading = mediaUploads.some(item => item.status === "UPLOADING");
+  const mediaHasError = mediaUploads.some(item => item.status === "ERROR");
+  const readyMedia = mediaUploads.filter(item => item.status === "READY" && item.fileAssetId);
+  const closeDraft = async () => {
+    if (mediaUploading) return;
+    await Promise.all(readyMedia.map(item =>
+      apiRequest(`/files/${item.fileAssetId}`, { method: "DELETE", token }).catch(() => undefined),
+    ));
+    mediaUploads.forEach(item => URL.revokeObjectURL(item.previewUrl));
+    close();
   };
   useEffect(() => {
     const search = symptomQuery.trim();
@@ -910,12 +1378,12 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
     finally { setSymptomBusy(""); }
   };
 
-  return <div className="treatment-page" onClick={close}><form className="treatment-record-page" onClick={event => event.stopPropagation()} onSubmit={save}>
+  return <div className="treatment-page" onClick={() => void closeDraft()}><form className="treatment-record-page" onClick={event => event.stopPropagation()} onSubmit={save}>
     <header className="treatment-page-header">
-      <button type="button" className="treatment-back" onClick={close}>←</button>
+      <button type="button" className="treatment-back" disabled={mediaUploading} onClick={() => void closeDraft()}>←</button>
       <div><div className="treatment-title-line"><h2>บันทึกการรักษา</h2><span>ร่าง</span></div><p>เวชระเบียนความงามและแผนการรักษา</p></div>
       <div className="treatment-autosave"><i />บันทึกอัตโนมัติเมื่อกรอกข้อมูล</div>
-      <button type="button" className="treatment-close" onClick={close}>×</button>
+      <button type="button" className="treatment-close" disabled={mediaUploading} onClick={() => void closeDraft()}>×</button>
     </header>
     {!context ? <div className="checkin-loading treatment-loading"><span />กำลังโหลดข้อมูลการรักษา…</div> : <div className="treatment-page-body">
       <section className="treatment-patient-strip">
@@ -949,17 +1417,18 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
           <section><label>อาการ / สภาวะ *</label><div className="symptom-picker"><div className="symptom-selected">{selectedSymptoms.map(tag => <button type="button" key={tag.id} onClick={() => setSelectedSymptoms(current => current.filter(value => value.id !== tag.id))}>{tag.name}<span>×</span></button>)}<input value={symptomQuery} onFocus={() => setSymptomOpen(true)} onBlur={() => window.setTimeout(() => setSymptomOpen(false), 150)} onChange={event => { setSymptomQuery(event.target.value); setSymptomError(""); setSymptomOpen(true); }} placeholder={selectedSymptoms.length ? "ค้นหาเพิ่ม…" : "ค้นหาอาการหรือสภาวะ…"} /></div>{symptomOpen && (symptomQuery.trim() || matchingSymptoms.length > 0) && <div className="symptom-options">{matchingSymptoms.map(tag => <div key={tag.id}><button type="button" className="symptom-option-name" onClick={() => { setSelectedSymptoms(current => [...current, tag]); setSymptomQuery(""); setSymptomOpen(false); }}><span>＋</span>{tag.name}</button><button type="button" title="แก้ชื่อ" disabled={Boolean(symptomBusy)} onClick={() => void renameSymptom(tag)}>แก้ไข</button><button type="button" className="delete" title="ลบ tag" disabled={Boolean(symptomBusy)} onClick={() => void deleteSymptom(tag)}>ลบ</button></div>)}{canCreateSymptom && <button type="button" className="symptom-create" disabled={Boolean(symptomBusy)} onClick={() => void createSymptom()}>＋ สร้าง “{symptomQuery.trim()}”</button>}</div>}<small>เลือกได้หลายรายการ · ค้นหา สร้าง แก้ไข หรือลบ tag ได้จากช่องนี้</small>{symptomError && <em>{symptomError}</em>}<input type="hidden" name="symptoms" value={JSON.stringify(selectedSymptoms.map(tag => tag.name))} /></div></section>
           <section><label>รายละเอียดการรักษา *</label><textarea name="treatmentDetail" required placeholder="บันทึกสิ่งที่ตรวจพบ ขั้นตอนการรักษา ปริมาณ และผลระหว่างทำ…" /></section>
           <section><label>ตำแหน่งที่รักษา *</label><div className="area-tabs"><button type="button" className={activeAreaType === "FACE" ? "active" : ""} onClick={() => setActiveAreaType("FACE")}>ใบหน้า</button><button type="button" className={activeAreaType === "MOUTH" ? "active" : ""} onClick={() => setActiveAreaType("MOUTH")}>ช่องปาก / ฟัน</button><button type="button" className={activeAreaType === "BODY" ? "active" : ""} onClick={() => setActiveAreaType("BODY")}>ร่างกาย</button></div><div className={`area-part-selector ${activeAreaType === "FACE" ? "with-face" : ""}`}>{activeAreaType === "FACE" && <div className="face-outline" aria-hidden="true"><span className="forehead">หน้าผาก</span><span className="nose">จมูก</span><span className="mouth">ปาก</span><span className="chin">คาง</span></div>}<div className="area-part-grid">{areaOptions.map(option => <button type="button" key={`${activeAreaType}:${option.part}`} className={isAreaSelected(activeAreaType, option.part) ? "selected" : ""} onClick={() => toggleArea(option)}>{isAreaSelected(activeAreaType, option.part) ? "✓ " : "+ "}{option.partName}</button>)}</div></div><div className="area-detail-list"><div className="area-detail-heading"><b>รายละเอียดรายตำแหน่ง</b><small>ระบุอาการ สิ่งที่ตรวจพบ หรือการรักษาของแต่ละส่วน</small></div>{areas.length ? areas.map(area => <article key={`${area.type}:${area.part}`}><header><span>{area.partName}</span><small>{area.type === "FACE" ? "ใบหน้า" : area.type === "MOUTH" ? "ช่องปาก / ฟัน" : "ร่างกาย"}</small><button type="button" onClick={() => removeArea(area)}>ลบ</button></header><textarea value={area.detail} onChange={event => setAreaDetail(area, event.target.value)} required placeholder={`${area.partName}: รายละเอียดการรักษาหรืออาการ`} /></article>) : <div className="treatment-empty compact">เลือกส่วนที่รักษาจากรายการด้านบน</div>}</div><input type="hidden" name="treatmentAreas" value={JSON.stringify(areas)} /></section>
-          <section className="medication-panel"><div className="subsection-heading"><div><h3>ยาและเวชภัณฑ์ตามรายการรักษา</h3><p>รายการจากสูตรบริการ ใช้เป็น snapshot ในบันทึกครั้งนี้</p></div></div>{!formulaProducts.length ? <div className="treatment-empty compact">ไม่มีสินค้าในสูตรบริการ</div> : <div className="medication-table"><header><span>ชื่อรายการ</span><span>แนะนำ</span><span>ใช้จริง</span><span>หน่วย</span></header>{formulaProducts.map(product => <div key={`${product.catalogItemId}-${product.source}`}><span><b>{product.name}</b><small>จาก {product.source}</small></span><span>{product.recommendedQuantity}</span><span className="qty-control"><button type="button" onClick={() => setFormulaQuantities(value => ({ ...value, [product.catalogItemId]: Math.max(0, (value[product.catalogItemId] ?? product.recommendedQuantity) - 1) }))}>−</button><b>{formulaQuantities[product.catalogItemId] ?? product.recommendedQuantity}</b><button type="button" onClick={() => setFormulaQuantities(value => ({ ...value, [product.catalogItemId]: (value[product.catalogItemId] ?? product.recommendedQuantity) + 1 }))}>+</button></span><span>{product.unit || "ชิ้น"}</span></div>)}</div>}</section>
-          <section className="medication-panel add-on-panel"><div className="subsection-heading"><div><h3>ยาและเวชภัณฑ์เพิ่มเติม (Add-on)</h3><p>ค้นหาสินค้าใน Catalog เพื่อเพิ่มนอกเหนือจากสูตร และคิดยอดชำระแยก</p></div>{selectedAddOns.length > 0 && <span className="addon-payment-state">รอชำระ ฿{addOnTotal.toLocaleString("th-TH")}</span>}</div><div className="addon-search"><span>⌕</span><input value={addOnQuery} onChange={event => setAddOnQuery(event.target.value)} placeholder="ค้นหาชื่อยา สินค้า หรือรหัส…" /></div>{addOnQuery.trim() && <div className="addon-results">{matchingProducts.length ? matchingProducts.map(product => <button key={product.id} type="button" onClick={() => { setAddOns(value => ({ ...value, [product.id]: (value[product.id] ?? 0) + 1 })); setAddOnQuery(""); }}><span><b>{product.name}</b><small>{product.code} · stock {product.productDetail?.currentStock ?? 0} {product.productDetail?.unit || "ชิ้น"}</small></span><strong>฿{Number(product.finalPrice).toLocaleString("th-TH")}</strong><em>+ เพิ่ม</em></button>) : <p>ไม่พบสินค้าที่ค้นหา</p>}</div>}{selectedAddOns.length > 0 ? <div className="addon-cart"><header><span>รายการ</span><span>จำนวน</span><span>ราคา</span><span /></header>{selectedAddOns.map(product => <div key={product.id}><span><b>{product.name}</b><small>{product.code} · {product.productDetail?.unit || "ชิ้น"}</small></span><span className="qty-control"><button type="button" onClick={() => setAddOns(value => ({ ...value, [product.id]: Math.max(0, value[product.id] - 1) }))}>−</button><b>{addOns[product.id]}</b><button type="button" onClick={() => setAddOns(value => ({ ...value, [product.id]: value[product.id] + 1 }))}>+</button></span><strong>฿{(Number(product.finalPrice) * addOns[product.id]).toLocaleString("th-TH")}</strong><button type="button" className="addon-remove" onClick={() => setAddOns(value => ({ ...value, [product.id]: 0 }))}>ลบ</button></div>)}<footer><span>ยอด Add-on ที่ต้องชำระ</span><b>฿{addOnTotal.toLocaleString("th-TH")}</b></footer></div> : <div className="treatment-empty compact">ยังไม่มีรายการ Add-on</div>}</section>
+          <section className="medication-panel"><div className="subsection-heading"><div><h3>ยาและเวชภัณฑ์ตามรายการรักษา</h3><p>ระบบตัด Lot แบบ FEFO ตามจำนวนใช้จริงเมื่อบันทึกการรักษา</p></div></div>{!formulaProducts.length ? <div className="treatment-empty compact">ไม่มีสินค้าในสูตรบริการ</div> : <div className="medication-table"><header><span>ชื่อรายการ</span><span>แนะนำ</span><span>ใช้จริง</span><span>หน่วย</span></header>{formulaProducts.map(product => { const formulaKey = `${product.sourceAppointmentItemId}:${product.catalogItemId}`; return <div key={formulaKey}><span><b>{product.name}</b><small>จาก {product.source}</small></span><span>{product.recommendedQuantity}</span><span className="qty-control"><button type="button" onClick={() => setFormulaQuantities(value => ({ ...value, [formulaKey]: Math.max(0, (value[formulaKey] ?? product.recommendedQuantity) - 1) }))}>−</button><b>{formulaQuantities[formulaKey] ?? product.recommendedQuantity}</b><button type="button" onClick={() => setFormulaQuantities(value => ({ ...value, [formulaKey]: (value[formulaKey] ?? product.recommendedQuantity) + 1 }))}>+</button></span><span>{product.unit || "ชิ้น"}</span></div>; })}</div>}</section>
+          <section className="medication-panel add-on-panel"><div className="subsection-heading"><div><h3>รายการเพิ่มเติม (Add-on)</h3><p>เพิ่มสินค้า บริการ หรือคอร์ส แล้วส่งยอดรวมไปยังขั้นตอนชำระเงิน</p></div>{selectedAddOns.length > 0 && <span className="addon-payment-state">รอชำระ {money(addOnTotal)}</span>}</div><div className="addon-search"><span>⌕</span><input value={addOnQuery} onChange={event => setAddOnQuery(event.target.value)} placeholder="ค้นหาสินค้า บริการ คอร์ส หรือรหัส…" /></div>{addOnQuery.trim() && <div className="addon-results">{matchingProducts.length ? matchingProducts.map(product => <button key={product.id} type="button" disabled={product.type === "PRODUCT" && (product.productDetail?.currentStock ?? 0) <= 0} onClick={() => { setAddOns(value => ({ ...value, [product.id]: (value[product.id] ?? 0) + 1 })); setAddOnQuery(""); }}><span><b>{product.name}</b><small>{product.type === "PRODUCT" ? `สินค้า · ${product.code} · stock ${product.productDetail?.currentStock ?? 0} ${product.productDetail?.unit || "ชิ้น"}` : product.type === "SERVICE" ? `บริการ · ${product.code}${product.serviceDetail?.durationMinutes ? ` · ${product.serviceDetail.durationMinutes} นาที` : ""}` : `คอร์ส · ${product.code}${product.courseDetail?.sessionCount ? ` · ${product.courseDetail.sessionCount} ครั้ง` : ""}`}</small></span><strong>{money(Number(product.finalPrice))}</strong><em>{product.type !== "PRODUCT" || (product.productDetail?.currentStock ?? 0) > 0 ? "+ เพิ่ม" : "สินค้าหมด"}</em></button>) : <p>ไม่พบรายการที่ค้นหา</p>}</div>}{selectedAddOns.length > 0 ? <div className="addon-cart"><header><span>รายการ</span><span>จำนวน</span><span>ราคารวม VAT</span><span /></header>{selectedAddOns.map(product => { const quantity = addOns[product.id]; const tax = product.taxBreakdown; return <div key={product.id}><span><b>{product.name}</b><small>{product.type === "PRODUCT" ? `สินค้า · ${product.code}` : product.type === "SERVICE" ? `บริการ · ${product.code}` : `คอร์ส · ${product.code}`}</small>{tax && <small className="addon-line-tax">หัตถการ {money(Number(tax.nonTaxableAmount) * quantity)} · สินค้าก่อน VAT {money(Number(tax.taxableAmount) * quantity)} · VAT {money(Number(tax.taxAmount) * quantity)}</small>}</span><span className="qty-control"><button type="button" onClick={() => setAddOns(value => ({ ...value, [product.id]: Math.max(0, value[product.id] - 1) }))}>−</button><b>{quantity}</b><button type="button" onClick={() => setAddOns(value => ({ ...value, [product.id]: value[product.id] + 1 }))}>+</button></span><strong>{money(Number(product.finalPrice) * quantity)}</strong><button type="button" className="addon-remove" onClick={() => setAddOns(value => ({ ...value, [product.id]: 0 }))}>ลบ</button></div>; })}<footer className="addon-totals"><div><span>ค่าหัตถการ (ไม่คิด VAT)</span><b>{money(addOnBreakdown.procedure)}</b></div><div><span>สินค้า / ยา / เวชภัณฑ์ก่อน VAT</span><b>{money(addOnBreakdown.goodsBeforeVat)}</b></div><div><span>VAT 7%</span><b>{money(addOnBreakdown.vat)}</b></div><div className="addon-grand-total"><span>ยอด Add-on ที่ต้องชำระ</span><b>{money(addOnTotal)}</b></div></footer></div> : <div className="treatment-empty compact">ยังไม่มีรายการ Add-on</div>}</section>
           <section><label>คำแนะนำหลังการรักษา</label><textarea name="aftercareNote" placeholder="คำแนะนำ การดูแลตัวเอง และวันนัดครั้งถัดไป…" /></section>
           <input type="hidden" name="medications" value={JSON.stringify(medications)} />
           <input type="hidden" name="addOns" value={JSON.stringify(selectedAddOns.map(product => ({ itemId: product.id, quantity: addOns[product.id] })))} />
+          <input type="hidden" name="media" value={JSON.stringify(readyMedia.map((item, index) => ({ fileAssetId: item.fileAssetId, type: item.type, sortOrder: index })))} />
         </main>
 
         <aside className="treatment-side">
-          <section className="treatment-card photo-panel"><h3>ภาพการรักษา Before / After</h3><p>ตัวอย่าง UI — API จัดเก็บไฟล์ยังไม่พร้อม</p><label>ก่อนรักษา</label><div className="photo-grid">{beforeImages.map(image => <Image unoptimized width={160} height={160} key={image} src={image} alt="ก่อนรักษา" />)}<label className="photo-upload">＋<span>เพิ่มรูป</span><input type="file" accept="image/*" multiple onChange={event => addPreviews(event.target.files, setBeforeImages)} /></label></div><label>หลังรักษา</label><div className="photo-grid">{afterImages.map(image => <Image unoptimized width={160} height={160} key={image} src={image} alt="หลังรักษา" />)}<label className="photo-upload">＋<span>เพิ่มรูป</span><input type="file" accept="image/*" multiple onChange={event => addPreviews(event.target.files, setAfterImages)} /></label></div></section>
+          <section className="treatment-card photo-panel"><h3>ภาพการรักษา Before / After</h3><p>อัปโหลดเข้าพื้นที่จัดเก็บของคลินิก สูงสุดฝั่งละ 4 รูป</p><label>ก่อนรักษา</label><div className="photo-grid">{beforeImages.map(item => <div className={`photo-item ${item.status.toLowerCase()}`} key={item.localId}><Image unoptimized width={160} height={160} src={item.previewUrl} alt="ก่อนรักษา" /><button type="button" aria-label="ลบรูปก่อนรักษา" onClick={() => void removeTreatmentMedia(item)}>×</button>{item.status === "UPLOADING" && <span>กำลังอัปโหลด…</span>}{item.status === "ERROR" && <span title={item.error}>อัปโหลดไม่สำเร็จ</span>}</div>)}{beforeImages.length < 4 && <label className="photo-upload">＋<span>เพิ่มรูป</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={event => { void uploadTreatmentMedia(event.target.files, "BEFORE"); event.currentTarget.value = ""; }} /></label>}</div><label>หลังรักษา</label><div className="photo-grid">{afterImages.map(item => <div className={`photo-item ${item.status.toLowerCase()}`} key={item.localId}><Image unoptimized width={160} height={160} src={item.previewUrl} alt="หลังรักษา" /><button type="button" aria-label="ลบรูปหลังรักษา" onClick={() => void removeTreatmentMedia(item)}>×</button>{item.status === "UPLOADING" && <span>กำลังอัปโหลด…</span>}{item.status === "ERROR" && <span title={item.error}>อัปโหลดไม่สำเร็จ</span>}</div>)}{afterImages.length < 4 && <label className="photo-upload">＋<span>เพิ่มรูป</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={event => { void uploadTreatmentMedia(event.target.files, "AFTER"); event.currentTarget.value = ""; }} /></label>}</div>{mediaHasError && <div className="photo-error">ลบรูปที่อัปโหลดไม่สำเร็จแล้วเลือกใหม่</div>}</section>
           <section className="treatment-card doctor-sign"><small>แพทย์ผู้รับรองการรักษา</small><strong>{card.doctor.name}</strong><span>{context.doctor?.licenseNo ? `เลขใบประกอบโรคศิลปะ: ${context.doctor.licenseNo}` : context.doctor?.specialty || "แพทย์ผู้รักษา"}</span></section>
-          <button className="treatment-submit" disabled={busy || unresolved > 0 || areas.length === 0 || hasIncompleteArea || selectedSymptoms.length === 0}>{busy ? "กำลังบันทึก…" : unresolved > 0 ? `กรุณายืนยันอีก ${unresolved} รายการ` : selectedSymptoms.length === 0 ? "กรุณาเลือกอาการ / สภาวะ" : areas.length === 0 ? "กรุณาเลือกตำแหน่งรักษา" : hasIncompleteArea ? "กรุณากรอกรายละเอียดทุกตำแหน่ง" : "จบการรักษา"}</button>
+          <button className="treatment-submit" disabled={busy || mediaUploading || mediaHasError || unresolved > 0 || areas.length === 0 || hasIncompleteArea || selectedSymptoms.length === 0}>{busy ? "กำลังบันทึก…" : mediaUploading ? "กำลังอัปโหลดรูป…" : mediaHasError ? "กรุณาตรวจสอบรูปที่อัปโหลด" : unresolved > 0 ? `กรุณายืนยันอีก ${unresolved} รายการ` : selectedSymptoms.length === 0 ? "กรุณาเลือกอาการ / สภาวะ" : areas.length === 0 ? "กรุณาเลือกตำแหน่งรักษา" : hasIncompleteArea ? "กรุณากรอกรายละเอียดทุกตำแหน่ง" : "จบการรักษา"}</button>
           <p className="treatment-submit-note">การบันทึกจะยืนยันผลรายการรักษาและตัดสิทธิ์เฉพาะรายการที่เลือก “ใช้แล้ว”</p>
         </aside>
       </div>
@@ -967,15 +1436,78 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
   </form></div>;
 }
 
-function PaymentDialog({ value, busy, setValue, close, save }: { value: CheckoutState; busy: boolean; setValue: React.Dispatch<React.SetStateAction<CheckoutState | null>>; close: () => void; save: (event: FormEvent) => void }) {
+function TreatmentHistoryDialog({ value, busy, close, update, addendum }: {
+  value: TreatmentHistoryState;
+  busy: boolean;
+  close: () => void;
+  update: (payload: Record<string, unknown>) => Promise<void>;
+  addendum: (note: string) => Promise<void>;
+}) {
+  const [selectedVersion, setSelectedVersion] = useState(value.record.version);
+  const [symptoms, setSymptoms] = useState(listValue(value.record.symptoms).join(", "));
+  const [areas, setAreas] = useState<TreatmentArea[]>(Array.isArray(value.record.treatmentAreas) ? value.record.treatmentAreas as TreatmentArea[] : []);
+  const [openedAt] = useState(() => Date.now());
+  const current = value.versions.find(item => item.version === selectedVersion) ?? value.versions[0];
+  const canEdit = openedAt < new Date(value.record.editableUntil).getTime();
+  const minutesLeft = Math.max(0, Math.ceil((new Date(value.record.editableUntil).getTime() - openedAt) / 60000));
+
+  async function saveRevision(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    await update({
+      symptoms: symptoms.split(",").map(item => item.trim()).filter(Boolean),
+      treatmentDetail: String(form.get("treatmentDetail") || ""),
+      treatmentAreas: areas,
+      aftercareNote: String(form.get("aftercareNote") || "") || undefined,
+      changeReason: String(form.get("changeReason") || "") || undefined,
+    });
+  }
+
+  async function saveAddendum(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const note = String(data.get("note") || "").trim();
+    if (!note) return;
+    await addendum(note);
+    form.reset();
+  }
+
+  return <div className="treatment-version-backdrop" onClick={close}><div className="treatment-version-dialog" onClick={event => event.stopPropagation()}>
+    <header><div><p className="eyebrow">TREATMENT HISTORY</p><h2>ผลการรักษาและประวัติเวอร์ชัน</h2><span>{value.card.patient.name} · {value.card.appointmentNo}</span></div><button type="button" onClick={close}>×</button></header>
+    <section className={`revision-policy ${canEdit ? "open" : "locked"}`}><b>{canEdit ? `แก้ไขได้อีก ${minutesLeft >= 60 ? `${Math.floor(minutesLeft / 60)} ชม. ${minutesLeft % 60} นาที` : `${minutesLeft} นาที`}` : "ครบกำหนดแก้ไขแล้ว"}</b><span>{canEdit ? `ทุกครั้งที่บันทึกจะสร้างเวอร์ชันใหม่ · หมดเวลา ${new Date(value.record.editableUntil).toLocaleString("th-TH")}` : "ข้อมูลผลรักษาถูกล็อกแล้ว สามารถเพิ่มหมายเหตุเพิ่มเติมได้เท่านั้น"}</span></section>
+    <div className="treatment-version-layout">
+      <aside><h3>เวอร์ชันทั้งหมด</h3>{value.versions.map(item => <button type="button" className={selectedVersion === item.version ? "active" : ""} key={item.version} onClick={() => setSelectedVersion(item.version)}><b>เวอร์ชัน {item.version}</b><span>{new Date(item.changedAt).toLocaleString("th-TH")}</span>{item.changeReason && <small>{item.changeReason}</small>}</button>)}</aside>
+      <main>
+        {current && <section className="version-preview"><div className="version-preview-head"><h3>เวอร์ชัน {current.version}</h3><span>{new Date(current.changedAt).toLocaleString("th-TH")}</span></div><dl><div><dt>อาการ / สภาวะ</dt><dd>{listValue(current.symptoms).join(", ") || "—"}</dd></div><div><dt>รายละเอียดการรักษา</dt><dd>{current.treatmentDetail}</dd></div><div><dt>ตำแหน่งที่รักษา</dt><dd>{Array.isArray(current.treatmentAreas) && current.treatmentAreas.length ? (current.treatmentAreas as TreatmentArea[]).map(area => <span key={`${area.type}:${area.part}`}><b>{area.partName}</b>{area.detail}</span>) : "—"}</dd></div><div><dt>คำแนะนำหลังรักษา</dt><dd>{current.aftercareNote || "—"}</dd></div></dl><div className="version-media"><h4>ภาพ Before / After</h4>{current.mediaSnapshot?.length ? <div className="version-media-groups">{(["BEFORE", "AFTER"] as TreatmentMediaType[]).map(type => <section key={type}><b>{type === "BEFORE" ? "ก่อนรักษา" : "หลังรักษา"}</b><div>{current.mediaSnapshot?.filter(item => item.type === type).map(item => item.downloadUrl ? <a href={item.downloadUrl} target="_blank" rel="noreferrer" key={item.id}><Image unoptimized width={180} height={180} src={item.downloadUrl} alt={item.caption || (type === "BEFORE" ? "ก่อนรักษา" : "หลังรักษา")} /></a> : <span key={item.id}>{item.originalName || "ไม่สามารถเปิดรูปได้"}</span>)}</div></section>)}</div> : <p className="muted">เวอร์ชันนี้ไม่มีภาพการรักษา</p>}</div></section>}
+        {canEdit ? <form key={value.record.version} className="revision-form" onSubmit={saveRevision}><h3>แก้ไขผลการรักษาปัจจุบัน</h3><label>อาการ / สภาวะ<input value={symptoms} onChange={event => setSymptoms(event.target.value)} placeholder="คั่นแต่ละรายการด้วยเครื่องหมายจุลภาค" /></label><label>รายละเอียดการรักษา<textarea name="treatmentDetail" required defaultValue={value.record.treatmentDetail} /></label><div className="revision-areas"><label>รายละเอียดตำแหน่งที่รักษา</label>{areas.map((area, index) => <div key={`${area.type}:${area.part}`}><b>{area.partName}</b><textarea required value={area.detail} onChange={event => setAreas(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, detail: event.target.value } : item))} /></div>)}</div><label>คำแนะนำหลังรักษา<textarea name="aftercareNote" defaultValue={value.record.aftercareNote ?? ""} /></label><label>เหตุผลที่แก้ไข<input name="changeReason" placeholder="เช่น แก้คำผิด หรือเพิ่มเติมรายละเอียดจากแพทย์" /></label><button className="primary-button" disabled={busy}>{busy ? "กำลังบันทึก…" : `บันทึกเป็นเวอร์ชัน ${value.record.version + 1}`}</button></form> : <form className="addendum-form" onSubmit={saveAddendum}><h3>เพิ่มหมายเหตุเพิ่มเติม</h3><p>หมายเหตุจะต่อท้ายเวชระเบียนและไม่เปลี่ยนข้อมูลในเวอร์ชันเดิม</p><textarea name="note" required maxLength={4000} placeholder="ระบุข้อมูลติดตามอาการหรือข้อมูลเพิ่มเติม…" /><button className="primary-button" disabled={busy}>{busy ? "กำลังบันทึก…" : "เพิ่มหมายเหตุ"}</button></form>}
+        <section className="addendum-list"><h3>หมายเหตุเพิ่มเติม</h3>{value.record.addenda?.length ? value.record.addenda.map(item => <article key={item.id}><p>{item.note}</p><small>{new Date(item.createdAt).toLocaleString("th-TH")}</small></article>) : <p className="muted">ยังไม่มีหมายเหตุเพิ่มเติม</p>}</section>
+      </main>
+    </div>
+  </div></div>;
+}
+
+function PaymentDialog({ value, busy, setValue, close, saveDraft, confirm, save }: { value: CheckoutState; busy: boolean; setValue: React.Dispatch<React.SetStateAction<CheckoutState | null>>; close: () => void; saveDraft: () => void; confirm: () => void; save: (event: FormEvent) => void }) {
   const money = (amount: string | number) => new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(amount));
   const recordMedications = Array.isArray(value.context?.treatmentRecord?.medications)
     ? value.context?.treatmentRecord?.medications as { name?: string; quantity?: number; unit?: string; kind?: string; source?: string; unitPrice?: number }[]
     : [];
   const includedMedications = recordMedications.filter(item => item.kind === "FORMULA");
   const saleLines = value.sale?.lines ?? [];
+  const treatmentLines = saleLines.filter(line => line.source === "TREATMENT_ADD_ON");
+  const matchingProducts = value.query.trim()
+    ? value.catalog.filter(item => `${item.code} ${item.name}`.toLowerCase().includes(value.query.trim().toLowerCase())).slice(0, 8)
+    : [];
+  const checkoutItems = Object.entries(value.checkoutLines).flatMap(([itemId, quantity]) => {
+    const catalogItem = value.catalog.find(item => item.id === itemId);
+    const snapshot = saleLines.find(line => line.catalogItemId === itemId && line.source !== "TREATMENT_ADD_ON");
+    return catalogItem || snapshot ? [{ itemId, quantity, catalogItem, snapshot }] : [];
+  });
   const subtotal = value.sale?.subtotal ?? value.amount;
   const discount = value.sale?.discountAmount ?? "0";
+  const taxableAmount = saleLines.reduce((sum, line) => sum + Number(line.taxableAmount ?? 0), 0);
+  const nonTaxableAmount = saleLines.reduce((sum, line) => sum + Number(line.nonTaxableAmount ?? 0), 0);
+  const taxAmount = value.sale?.taxAmount ?? saleLines.reduce((sum, line) => sum + Number(line.taxAmount ?? 0), 0);
 
   return <div className="checkout-page" onClick={close}><form className="checkout-workspace" onClick={event => event.stopPropagation()} onSubmit={save}>
     <header className="checkout-header"><button type="button" onClick={close}>←</button><div><h2>ตรวจสอบก่อนชำระเงิน</h2><p>ตรวจสอบสิทธิ์และรายการคิดเงินจากการรักษาก่อนดำเนินการ Checkout</p></div><span>{new Date().toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })}</span></header>
@@ -984,16 +1516,54 @@ function PaymentDialog({ value, busy, setValue, close, save }: { value: Checkout
       <main>
         <section className="checkout-card checkout-treatment-summary"><h3>สรุปผลการรักษาสำหรับ Checkout</h3><p>รายการที่ยืนยันว่าใช้จริง</p>{value.card.items.filter(item => item.usageStatus === "USED").length ? value.card.items.filter(item => item.usageStatus === "USED").map(item => <div key={item.id}><span><b>{item.name}</b><small>{item.type === "COURSE" ? "คอร์ส / สิทธิ์ของลูกค้า" : "บริการ"}</small></span><em>{item.settlementMode === "ENTITLEMENT" ? "ใช้สิทธิ์แล้ว" : item.settlementMode === "NO_CHARGE" ? "ไม่มีค่าใช้จ่าย" : "คิดเงิน"}</em></div>) : <div className="checkout-empty">ไม่มีรายการสิทธิ์ที่ใช้ในนัดนี้</div>}</section>
         <section className="checkout-card"><div className="checkout-section-head"><div><h3>ยา / เวชภัณฑ์ตามรายการรักษา</h3><p>รวมอยู่ในราคาบริการ ไม่คิดเงินเพิ่ม</p></div><span>฿0</span></div>{includedMedications.length ? includedMedications.map((item,index) => <div className="checkout-line" key={`${item.name}-${index}`}><span>{item.name || "รายการในสูตร"}</span><b>{item.quantity ?? 1} {item.unit || "ชิ้น"}</b></div>) : <div className="checkout-empty">ไม่มีเวชภัณฑ์ในสูตร</div>}</section>
-        <section className="checkout-card"><div className="checkout-section-head"><div><h3>รายการคิดเงินจากการรักษา</h3><p>{value.sale?.saleNo} · ราคา snapshot ณ เวลาบันทึก</p></div></div>{saleLines.length ? saleLines.map(line => <div className="checkout-charge-line" key={line.id}><span><b>{line.itemNameSnapshot}</b><small>{line.itemCodeSnapshot} · ×{line.quantity}</small></span><em>{line.itemType === "PRODUCT" ? "ยา / เวชภัณฑ์เพิ่มเติม" : "รายการคิดเงิน"}</em><strong>{money(line.netAmount)}</strong></div>) : <div className="checkout-empty">ไม่มีรายการคิดเงินเพิ่มเติม</div>}</section>
+        <section className="checkout-card"><div className="checkout-section-head"><div><h3>รายการ Add-on จากแพทย์</h3><p>{value.sale?.saleNo} · ล็อกจากผลการรักษา หากต้องแก้ให้กลับไปแก้เวชระเบียน</p></div><span className="checkout-locked">ล็อกแล้ว</span></div>{treatmentLines.length ? treatmentLines.map(line => <div className="checkout-charge-line" key={line.id}><span><b>{line.itemNameSnapshot}</b><small>{line.itemCodeSnapshot} · ×{line.quantity}</small><small>หัตถการ {money(line.nonTaxableAmount)} · สินค้าก่อน VAT {money(line.taxableAmount)} · VAT {money(line.taxAmount)}</small></span><em>{line.itemType === "PRODUCT" ? "สินค้า / ยา / เวชภัณฑ์" : line.itemType === "SERVICE" ? "บริการ" : "คอร์ส"}</em><strong>{money(line.netAmount)}</strong></div>) : <div className="checkout-empty">ไม่มี Add-on จากแพทย์</div>}</section>
+        <section className="checkout-card checkout-addon-editor"><div className="checkout-section-head"><div><h3>สินค้าเพิ่มเติมหน้า Checkout</h3><p>พนักงานเพิ่มหรือลดสินค้าได้จนกว่าจะกด “ยืนยันยอดชำระ”</p></div>{value.dirty && <span className="checkout-unsaved">ยังไม่บันทึก</span>}</div>{value.sale?.status === "DRAFT" ? <><div className="checkout-product-search"><span>⌕</span><input value={value.query} onChange={event => setValue(current => current ? { ...current, query: event.target.value } : current)} placeholder="ค้นหาชื่อสินค้า หรือรหัสสินค้า…" /></div>{matchingProducts.length > 0 && <div className="checkout-product-results">{matchingProducts.map(item => <button type="button" key={item.id} disabled={(item.productDetail?.currentStock ?? 0) <= 0} onClick={() => setValue(current => current ? { ...current, query: "", dirty: true, checkoutLines: { ...current.checkoutLines, [item.id]: (current.checkoutLines[item.id] ?? 0) + 1 } } : current)}><span><b>{item.name}</b><small>{item.code} · stock {item.productDetail?.currentStock ?? 0} {item.productDetail?.unit || "ชิ้น"}</small></span><strong>{money(item.finalPrice)}</strong><em>{(item.productDetail?.currentStock ?? 0) > 0 ? "+ เพิ่ม" : "สินค้าหมด"}</em></button>)}</div>}<div className="checkout-added-lines">{checkoutItems.length ? checkoutItems.map(item => <div key={item.itemId}><span><b>{item.catalogItem?.name ?? item.snapshot?.itemNameSnapshot}</b><small>{item.catalogItem?.code ?? item.snapshot?.itemCodeSnapshot}</small></span><div><button type="button" onClick={() => setValue(current => current ? { ...current, dirty: true, checkoutLines: { ...current.checkoutLines, [item.itemId]: Math.max(0, (current.checkoutLines[item.itemId] ?? 0) - 1) } } : current)}>−</button><b>{item.quantity}</b><button type="button" onClick={() => setValue(current => current ? { ...current, dirty: true, checkoutLines: { ...current.checkoutLines, [item.itemId]: (current.checkoutLines[item.itemId] ?? 0) + 1 } } : current)}>+</button></div><strong>{money((Number(item.catalogItem?.finalPrice ?? item.snapshot?.netAmount ?? 0) / Math.max(1, Number(item.snapshot?.quantity ?? 1))) * item.quantity)}</strong></div>) : <div className="checkout-empty">ยังไม่มีสินค้าที่พนักงานเพิ่ม</div>}</div><button type="button" className="checkout-save-draft" disabled={busy || !value.dirty} onClick={saveDraft}>{busy ? "กำลังบันทึก…" : "บันทึกรายการใน Bill"}</button></> : <div className="checkout-confirmed-lines">ยืนยันยอดแล้ว ไม่สามารถแก้รายการได้</div>}</section>
       </main>
       <aside>
         <section className="checkout-card checkout-select-card"><label>ผู้ขาย / ผู้แนะนำ<select><option>{value.card.doctor.name}</option></select></label></section>
         <section className="checkout-card checkout-select-card"><label>โปรโมชัน<select disabled><option>ไม่มีโปรโมชันเพิ่มเติม</option></select></label></section>
-        <section className="checkout-card checkout-totals"><h3>สรุปค่าใช้จ่าย</h3><div><span>ยอดก่อนส่วนลด</span><b>{money(subtotal)}</b></div><div><span>ส่วนลด</span><b className="discount">−{money(discount)}</b></div><div className="checkout-grand"><span>ยอดสุทธิ</span><b>{money(value.amount)}</b></div></section>
-        <section className="checkout-card checkout-payment-method"><label>ช่องทางชำระ<select value={value.method} onChange={event => setValue(current => current ? { ...current, method: event.target.value } : current)}><option value="QR">QR Payment</option><option value="CASH">เงินสด</option><option value="TRANSFER">โอนเงิน</option><option value="CREDIT_CARD">บัตรเครดิต</option></select></label><label>ยอดรับ<input type="number" min="0.01" step="0.01" required value={value.amount} onChange={event => setValue(current => current ? { ...current, amount: event.target.value } : current)} /></label></section>
-        <button className="checkout-submit" disabled={busy}>{busy ? "กำลังรับชำระ…" : "ดำเนินการ Checkout"}</button>
+        <section className="checkout-card checkout-totals"><h3>สรุปค่าใช้จ่าย</h3><div><span>ยอดก่อนส่วนลด</span><b>{money(subtotal)}</b></div><div><span>ส่วนลด</span><b className="discount">−{money(discount)}</b></div><div><span>ค่าหัตถการ (ไม่คิด VAT)</span><b>{money(nonTaxableAmount)}</b></div><div><span>สินค้า / ยา / เวชภัณฑ์ก่อน VAT</span><b>{money(taxableAmount)}</b></div><div><span>VAT 7%</span><b>{money(taxAmount)}</b></div><div className="checkout-grand"><span>ยอดสุทธิ</span><b>{money(value.amount)}</b></div></section>
+        {value.sale?.status === "DRAFT" ? <><div className="checkout-draft-hint">ตรวจรายการและบันทึกการแก้ไขให้เรียบร้อย ก่อนยืนยันยอดเพื่อเปิดรับชำระ</div><button type="button" className="checkout-submit" disabled={busy} onClick={confirm}>{busy ? "กำลังยืนยันยอด…" : "ยืนยันยอดชำระ"}</button></> : <><section className="checkout-card checkout-payment-method"><label>ช่องทางชำระ<select value={value.method} onChange={event => setValue(current => current ? { ...current, method: event.target.value } : current)}><option value="QR">QR Payment</option><option value="CASH">เงินสด</option><option value="TRANSFER">โอนเงิน</option><option value="CREDIT_CARD">บัตรเครดิต</option></select></label><label>ยอดรับ<input type="number" min="0.01" step="0.01" required value={value.amount} onChange={event => setValue(current => current ? { ...current, amount: event.target.value } : current)} /></label></section><button className="checkout-submit" disabled={busy}>{busy ? "กำลังรับชำระ…" : "ดำเนินการ Checkout"}</button></>}
         <button type="button" className="checkout-cancel" onClick={close}>กลับไปหน้าคิว</button>
       </aside>
     </div>
   </form></div>;
+}
+
+function ReceiptDialog({ receipt, close }: { receipt: ReceiptData; close: () => void }) {
+  const snapshot = receipt.snapshot;
+  const patientName = snapshot.patient
+    ? `${snapshot.patient.prefix ?? ""}${snapshot.patient.firstName ?? ""} ${snapshot.patient.lastName ?? ""}`.trim()
+    : "ลูกค้าทั่วไป";
+  const money = (amount: string | number) => new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", minimumFractionDigits: 2 }).format(Number(amount));
+  const methodLabel = (method: string) => ({ CASH: "เงินสด", QR: "QR Payment", TRANSFER: "โอนเงิน", CREDIT_CARD: "บัตรเครดิต" } as Record<string, string>)[method] ?? method;
+
+  return <div className="receipt-backdrop" onClick={close}><article className="receipt-sheet" onClick={event => event.stopPropagation()}>
+    <header className="receipt-actions"><button type="button" onClick={close}>← กลับ</button><button type="button" className="primary-button" onClick={() => window.print()}>พิมพ์ใบเสร็จ</button></header>
+    <section className="receipt-document">
+      <header><div><p className="eyebrow">OFFICIAL RECEIPT</p><h2>ใบเสร็จรับเงิน</h2><b>{snapshot.clinic.name}</b><small>{snapshot.clinic.code}</small></div><div className="receipt-number"><small>เลขที่ใบเสร็จ</small><b>{receipt.receiptNo}</b><span>{new Date(receipt.issuedAt).toLocaleString("th-TH")}</span></div></header>
+      <section className="receipt-parties"><div><small>ผู้รับบริการ</small><b>{patientName}</b><span>HN: {snapshot.patient?.hn ?? "—"}</span><span>โทร: {snapshot.patient?.phone ?? "—"}</span></div><div><small>อ้างอิงการขาย</small><b>{snapshot.sale.saleNo}</b><span>Appointment: {snapshot.sale.appointmentId ?? "—"}</span></div></section>
+      <div className="receipt-table"><header><span>รายการ</span><span>จำนวน</span><span>ราคา/หน่วย</span><span>ส่วนลด</span><span>VAT</span><span>รวม</span></header>{snapshot.lines.map((line, index) => <div key={`${line.itemCodeSnapshot}-${index}`}><span><b>{line.itemNameSnapshot}</b><small>{line.itemCodeSnapshot}</small></span><span>{line.quantity}</span><span>{money(line.unitBasePriceSnapshot)}</span><span>{money(line.discountAmount)}</span><span>{money(line.taxAmount)}</span><strong>{money(line.netAmount)}</strong></div>)}</div>
+      <section className="receipt-summary"><div><span>ยอดก่อนส่วนลด</span><b>{money(snapshot.sale.subtotal)}</b></div><div><span>ส่วนลด</span><b>−{money(snapshot.sale.discountAmount)}</b></div><div><span>VAT</span><b>{money(snapshot.sale.taxAmount)}</b></div><div className="receipt-total"><span>ยอดชำระสุทธิ</span><b>{money(snapshot.sale.paidAmount)}</b></div></section>
+      <section className="receipt-payments"><h3>รายละเอียดการชำระ</h3>{snapshot.payments.map(payment => <div key={payment.paymentNo}><span>{payment.paymentNo} · {methodLabel(payment.method)}{payment.reference ? ` · ${payment.reference}` : ""}</span><b>{money(payment.amount)}</b></div>)}</section>
+      <footer><p>ได้รับชำระเงินเรียบร้อยแล้ว</p><span>เอกสารนี้สร้างจากข้อมูล ณ เวลาที่ออกใบเสร็จ</span></footer>
+    </section>
+  </article></div>;
+}
+
+function UsageConfirmationDialog({ confirmation, close }: { confirmation: UsageConfirmationData; close: () => void }) {
+  const snapshot = confirmation.snapshot;
+  const patientName = `${snapshot.patient.prefix ?? ""}${snapshot.patient.firstName} ${snapshot.patient.lastName}`.trim();
+  const doctorName = `${snapshot.appointment.doctor.prefix ?? ""}${snapshot.appointment.doctor.firstName} ${snapshot.appointment.doctor.lastName}`.trim();
+
+  return <div className="receipt-backdrop" onClick={close}><article className="receipt-sheet" onClick={event => event.stopPropagation()}>
+    <header className="receipt-actions"><button type="button" onClick={close}>← กลับ</button><button type="button" className="primary-button" onClick={() => window.print()}>พิมพ์ใบยืนยัน</button></header>
+    <section className="receipt-document usage-document">
+      <header><div><p className="eyebrow">ENTITLEMENT USAGE CONFIRMATION</p><h2>ใบยืนยันการใช้สิทธิ์</h2><b>{snapshot.clinic.name}</b><small>{snapshot.clinic.code}</small></div><div className="receipt-number"><small>เลขที่เอกสาร</small><b>{confirmation.confirmationNo}</b><span>{new Date(confirmation.issuedAt).toLocaleString("th-TH")}</span></div></header>
+      <section className="receipt-parties"><div><small>ผู้รับบริการ</small><b>{patientName}</b><span>HN: {snapshot.patient.hn}</span><span>โทร: {snapshot.patient.phone || "—"}</span></div><div><small>ข้อมูลการรับบริการ</small><b>{snapshot.appointment.appointmentNo}</b><span>{new Date(snapshot.appointment.date).toLocaleDateString("th-TH")} · {snapshot.appointment.startTime}</span><span>{doctorName} · {snapshot.appointment.room.name}</span></div></section>
+      <div className="usage-table"><header><span>สิทธิ์ที่ใช้</span><span>ครั้งนี้</span><span>ลำดับการใช้</span><span>คงเหลือ</span></header>{snapshot.usages.map(usage => <div key={usage.usageId}><span><b>{usage.name}</b><small>{usage.code}{usage.sourceReceiptNo ? ` · อ้างอิง ${usage.sourceReceiptNo}` : usage.sourceSaleNo ? ` · อ้างอิง ${usage.sourceSaleNo}` : ""}</small></span><span>{usage.unitsUsed} ครั้ง</span><strong>ครั้งที่ {usage.usageNumber}/{usage.totalUnits}</strong><span>{usage.remainingUnits} ครั้ง</span></div>)}</div>
+      <section className="usage-zero-total"><span>ยอดที่ต้องชำระครั้งนี้</span><b>฿0.00</b><small>ใช้สิทธิ์ที่ชำระไว้แล้ว ไม่มีการรับเงินเพิ่มเติม</small></section>
+      <footer><p>ยืนยันการใช้สิทธิ์เรียบร้อยแล้ว</p><span>เอกสารนี้ไม่ใช่ใบเสร็จรับเงินหรือใบกำกับภาษี</span></footer>
+    </section>
+  </article></div>;
 }
