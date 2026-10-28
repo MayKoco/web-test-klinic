@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Klinic API Lab",
-  description: "A focused web workbench for testing clinic scheduling APIs",
+  title: "Klinic — Clinic operating system",
+  description: "ระบบจัดการคลินิกสำหรับนัดหมาย คิว ทีมงาน การขาย และหลายสาขา",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

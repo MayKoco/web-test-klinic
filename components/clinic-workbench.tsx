@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
 
@@ -28,6 +28,10 @@ type ClinicSettings = { id: string; name: string; code: string; timezone: string
 type Log = { id: number; time: string; method: string; path: string; ok: boolean; message: string };
 type TreatmentOption = { entitlementId: string; name: string; type: "SERVICE" | "COURSE"; totalUnits: number; remainingUnits: number };
 type TreatmentOptionGroup = { key: string; sourceType: string; sourceName: string; items: TreatmentOption[] };
+
+const LOCAL_SUBDOMAIN_CREDENTIALS: Record<string, { email: string; password: string }> = {
+  "kkdev-b58862": { email: "test@gmail.com", password: "test1234" },
+};
 
 function buildHourSlots(openHour: number, closeHour: number) {
   return Array.from(
@@ -70,7 +74,13 @@ function requestDoctorExceptions(doctorId: string, token: string) {
   return apiRequest<DoctorScheduleException[]>(`/doctors/${doctorId}/schedule-exceptions`, { token });
 }
 
-export default function ClinicWorkbench() {
+export default function ClinicWorkbench({
+  initialClinicSubdomain = null,
+}: {
+  initialClinicSubdomain?: string | null;
+}) {
+  const clinicSubdomain = initialClinicSubdomain;
+  const sessionRestoreStarted = useRef(false);
   const [token, setToken] = useState("");
   const [profile, setProfile] = useState<{ name: string; clinicCode: string } | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -150,9 +160,75 @@ export default function ClinicWorkbench() {
   }, [addLog, date, token]);
 
   useEffect(() => {
+    if (sessionRestoreStarted.current) return;
+    sessionRestoreStarted.current = true;
+    const handoffParams = new URLSearchParams(window.location.hash.slice(1));
+    const handoffValue = handoffParams.get("session");
+    if (handoffValue) {
+      try {
+        const handoff = JSON.parse(handoffValue) as {
+          accessToken?: string;
+          profile?: { name?: string; clinicCode?: string };
+        };
+        if (
+          handoff.accessToken &&
+          handoff.profile?.name &&
+          handoff.profile.clinicCode
+        ) {
+          const nextProfile = {
+            name: handoff.profile.name,
+            clinicCode: handoff.profile.clinicCode,
+          };
+          window.localStorage.setItem("klinic-test-token", handoff.accessToken);
+          window.localStorage.setItem(
+            "klinic-test-profile",
+            JSON.stringify(nextProfile),
+          );
+          window.history.replaceState(
+            null,
+            "",
+            `${window.location.pathname}${window.location.search}`,
+          );
+          window.location.reload();
+          return;
+        }
+      } catch {
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}${window.location.search}`,
+        );
+      }
+    }
     const saved = window.localStorage.getItem("klinic-test-token");
     const savedProfile = window.localStorage.getItem("klinic-test-profile");
-    if (!saved) return;
+    const loginWithLocalCredentials = () => {
+      const localCredentials = window.location.hostname.endsWith(".lvh.me") && clinicSubdomain
+        ? LOCAL_SUBDOMAIN_CREDENTIALS[clinicSubdomain]
+        : undefined;
+      if (localCredentials) {
+        const loginPath = `/auth/clinics/${encodeURIComponent(clinicSubdomain!)}/login`;
+        apiRequest<{ accessToken: string; user: { email: string } }>(loginPath, {
+          method: "POST",
+          body: JSON.stringify(localCredentials),
+        })
+          .then((result) => {
+            const nextProfile = { name: result.data.user.email, clinicCode: clinicSubdomain! };
+            window.localStorage.setItem("klinic-test-token", result.data.accessToken);
+            window.localStorage.setItem("klinic-test-profile", JSON.stringify(nextProfile));
+            setToken(result.data.accessToken);
+            setProfile(nextProfile);
+            void refresh(result.data.accessToken);
+          })
+          .catch((error: ApiClientError) => {
+            setNotice({ kind: "error", text: `${error.code}: ${error.message}` });
+          });
+      }
+    };
+    if (!saved) {
+      loginWithLocalCredentials();
+      return;
+    }
     apiRequest<Room[]>("/rooms?limit=1", { token: saved })
       .then(() => {
         setToken(saved);
@@ -162,6 +238,7 @@ export default function ClinicWorkbench() {
       .catch(() => {
         window.localStorage.removeItem("klinic-test-token");
         window.localStorage.removeItem("klinic-test-profile");
+        loginWithLocalCredentials();
       });
   // Session restore runs once; refresh receives the saved token explicitly.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -294,24 +371,58 @@ export default function ClinicWorkbench() {
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const clinicIdentifier = String(form.get("clinicCode") ?? "").trim().toLowerCase();
+    const credentials = {
+      email: form.get("email"),
+      password: form.get("password"),
+    };
     setBusy("login");
     setNotice(null);
     try {
-      const result = await apiRequest<{ accessToken: string; user: { email: string } }>("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ clinicCode: form.get("clinicCode"), email: form.get("email"), password: form.get("password") }),
-      });
+      let loginPath = clinicSubdomain
+        ? `/auth/clinics/${encodeURIComponent(clinicSubdomain)}/login`
+        : "/auth/login";
+      let result;
+      try {
+        result = await apiRequest<{ accessToken: string; user: { email: string } }>(loginPath, {
+          method: "POST",
+          body: JSON.stringify({
+            ...(clinicSubdomain ? {} : { clinicCode: clinicIdentifier }),
+            ...credentials,
+          }),
+        });
+      } catch (error) {
+        const apiError = error as ApiClientError;
+        if (clinicSubdomain || apiError.code !== "INVALID_CREDENTIALS" || !clinicIdentifier) {
+          throw error;
+        }
+        loginPath = `/auth/clinics/${encodeURIComponent(clinicIdentifier)}/login`;
+        result = await apiRequest<{ accessToken: string; user: { email: string } }>(loginPath, {
+          method: "POST",
+          body: JSON.stringify(credentials),
+        });
+      }
       window.localStorage.setItem("klinic-test-token", result.data.accessToken);
-      const prof = { name: result.data.user.email, clinicCode: String(form.get("clinicCode")) };
+      const prof = {
+        name: result.data.user.email,
+        clinicCode: clinicSubdomain ?? clinicIdentifier,
+      };
       window.localStorage.setItem("klinic-test-profile", JSON.stringify(prof));
       setToken(result.data.accessToken);
       setProfile(prof);
-      addLog("POST", "/auth/login", true, result.message);
+      addLog("POST", loginPath, true, result.message);
       await refresh(result.data.accessToken);
     } catch (error) {
       const apiError = error as ApiClientError;
       const message = apiError.code ? `${apiError.code}: ${apiError.message}` : (apiError.message ?? String(error));
-      addLog("POST", "/auth/login", false, message);
+      addLog(
+        "POST",
+        clinicSubdomain
+          ? `/auth/clinics/${clinicSubdomain}/login`
+          : `/auth/login → /auth/clinics/${clinicIdentifier}/login`,
+        false,
+        message,
+      );
       setNotice({ kind: "error", text: message });
       setBusy(null);
     }
@@ -573,7 +684,7 @@ export default function ClinicWorkbench() {
     document.getElementById("appointment-form")?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
-  if (!token) return <LoginScreen busy={busy === "login"} notice={notice} onSubmit={login} />;
+  if (!token) return <LoginScreen busy={busy === "login"} notice={notice} onSubmit={login} clinicSubdomain={clinicSubdomain} />;
 
   return (
     <main className="app-shell">
@@ -660,8 +771,11 @@ export default function ClinicWorkbench() {
   );
 }
 
-function LoginScreen({ busy, notice, onSubmit }: { busy: boolean; notice: { kind: "success" | "error"; text: string } | null; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
-  return <main className="login-shell"><section className="login-story"><div className="brand-mark">K<span>+</span></div><p className="eyebrow light">KLINIC API LAB</p><h1>ทดสอบเส้นทางนัดหมาย<br />ตั้งแต่เปิดห้องจนถึงจองคิว</h1><p>เว็บสำหรับตรวจ API จริงของ Doctor, Room, Patient และ Appointment แบบเห็นผลลัพธ์ทุกขั้นตอน</p><div className="flow-preview">{["สร้างห้อง", "ลงเวรหมอ", "เพิ่มคนไข้", "สร้างนัด"].map((item, index) => <div key={item}><b>{index + 1}</b><span>{item}</span></div>)}</div></section><section className="login-panel"><div className="login-card"><p className="eyebrow">CLINIC WORKSPACE</p><h2>เข้าสู่ระบบทดสอบ</h2><p className="muted">ใช้บัญชีจาก development seed หรือบัญชี clinic ที่สร้างไว้</p><form onSubmit={onSubmit} className="form-stack"><label>Clinic code<input name="clinicCode" defaultValue="CLINIC-0001" required /></label><label>Email<input name="email" type="email" defaultValue="owner@test.clinic" required /></label><label>Password<input name="password" type="password" defaultValue="Test1234!" required /></label><button className="primary-button" disabled={busy}>{busy ? "กำลังเชื่อมต่อ..." : "เข้าสู่ API Lab"}</button></form>{notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}<p className="connection-hint"><span /> API default: http://localhost:8080/api</p></div></section></main>;
+function LoginScreen({ busy, notice, onSubmit, clinicSubdomain }: { busy: boolean; notice: { kind: "success" | "error"; text: string } | null; onSubmit: (event: FormEvent<HTMLFormElement>) => void; clinicSubdomain: string | null }) {
+  const localCredentials = process.env.NODE_ENV === "development" && clinicSubdomain
+    ? LOCAL_SUBDOMAIN_CREDENTIALS[clinicSubdomain]
+    : undefined;
+  return <main className="login-shell"><section className="login-story"><div className="brand-mark">K<span>+</span></div><p className="eyebrow light">KLINIC API LAB</p><h1>ทดสอบเส้นทางนัดหมาย<br />ตั้งแต่เปิดห้องจนถึงจองคิว</h1><p>เว็บสำหรับตรวจ API จริงของ Doctor, Room, Patient และ Appointment แบบเห็นผลลัพธ์ทุกขั้นตอน</p><div className="flow-preview">{["สร้างห้อง", "ลงเวรหมอ", "เพิ่มคนไข้", "สร้างนัด"].map((item, index) => <div key={item}><b>{index + 1}</b><span>{item}</span></div>)}</div></section><section className="login-panel"><div className="login-card"><nav className="login-flow-menu" aria-label="เลือก flow ทดสอบ"><span className="active">Clinic Login</span><a href="/activation">Owner Activation Test</a></nav><p className="eyebrow">CLINIC WORKSPACE</p><h2>เข้าสู่ระบบทดสอบ</h2>{clinicSubdomain ? <p className="tenant-host-badge"><span /> Clinic: <b>{clinicSubdomain}</b></p> : <p className="muted">กรอกได้ทั้ง Clinic code หรือชื่อ subdomain สำหรับ development</p>}<form onSubmit={onSubmit} method="post" className="form-stack">{!clinicSubdomain && <label>Clinic code / Subdomain<input name="clinicCode" defaultValue="CLINIC-0001" required /></label>}<label>Email<input name="email" type="email" autoComplete="username" defaultValue={localCredentials?.email ?? (clinicSubdomain ? "" : "owner@test.clinic")} required /></label><label>Password<input name="password" type="password" autoComplete="current-password" defaultValue={localCredentials?.password ?? (clinicSubdomain ? "" : "Test1234!")} required /></label><button className="primary-button" disabled={busy}>{busy ? "กำลังเชื่อมต่อ..." : "เข้าสู่ API Lab"}</button></form>{notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}<a className="activation-shortcut" href="/activation"><span>02</span><div><b>เปิดบัญชี Owner ใหม่</b><small>ทดสอบ Platform → Activation → Clinic Login โดยไม่ใช้ email</small></div><strong>ไปทดสอบ →</strong></a><p className="connection-hint"><span /> {clinicSubdomain ? `${clinicSubdomain}.lvh.me:3000` : "API default: http://localhost:8080/api"}</p></div></section></main>;
 }
 
 function PanelHeading({ icon, tone, step, title, trailing }: { icon: string; tone: string; step: string; title: string; trailing?: React.ReactNode }) {

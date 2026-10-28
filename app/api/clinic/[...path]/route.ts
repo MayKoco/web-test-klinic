@@ -1,5 +1,6 @@
-const API_BASE = (process.env.KLINIC_API_URL ?? "http://localhost:8080/api").replace(/\/$/, "");
+import { clinicSubdomainFromHostname } from "@/lib/tenant-host";
 
+const API_BASE = (process.env.KLINIC_API_URL ?? "http://localhost:8080/api").replace(/\/$/, "");
 async function proxy(request: Request, context: RouteContext<"/api/clinic/[...path]">) {
   const { path } = await context.params;
   const incoming = new URL(request.url);
@@ -8,9 +9,11 @@ async function proxy(request: Request, context: RouteContext<"/api/clinic/[...pa
   const authorization = request.headers.get("authorization");
   const contentType = request.headers.get("content-type");
   const idempotencyKey = request.headers.get("idempotency-key");
+  const clinicSubdomain = clinicSubdomainFromHostname(incoming.hostname);
   if (authorization) headers.set("authorization", authorization);
   if (contentType) headers.set("content-type", contentType);
   if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
+  if (clinicSubdomain) headers.set("x-klinic-subdomain", clinicSubdomain);
 
   try {
     const upstream = await fetch(target, {

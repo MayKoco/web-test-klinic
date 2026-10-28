@@ -1,5 +1,5 @@
-import ClinicWorkbench from "@/components/clinic-workbench";
+import PublicLanding from "@/components/public-landing";
 
 export default function Home() {
-  return <ClinicWorkbench />;
+  return <PublicLanding />;
 }
