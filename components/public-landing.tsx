@@ -1,9 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useMemo, useState } from "react";
-import { ApiClientError, apiRequest } from "@/lib/api";
-import { OwnerSession, storeOwnerSession } from "@/lib/owner-session";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ApiClientError } from "@/lib/api";
 
 type Draft = {
   clinicName: string;
@@ -14,6 +13,34 @@ type Draft = {
   password: string;
   terms: boolean;
 };
+
+type SignupResult = {
+  email: string;
+  emailDelivery: "PENDING" | "SENT" | "SKIPPED" | "FAILED";
+  appUrl: string | null;
+};
+
+type StreamSignupResult = Pick<SignupResult, "emailDelivery" | "appUrl">;
+
+type SignupStep =
+  | "VALIDATING"
+  | "ACCOUNT_CREATED"
+  | "CLINIC_PROVISIONING"
+  | "CLINIC_READY"
+  | "OWNER_ACTIVATED"
+  | "EMAIL_QUEUED"
+  | "COMPLETED"
+  | "FAILED";
+
+const signupSteps: Array<{ step: SignupStep; label: string }> = [
+  { step: "VALIDATING", label: "ตรวจสอบข้อมูล" },
+  { step: "ACCOUNT_CREATED", label: "สร้างบัญชี Owner" },
+  { step: "CLINIC_PROVISIONING", label: "เตรียม Clinic และสิทธิ์" },
+  { step: "CLINIC_READY", label: "เปิดแพ็กเกจ Free" },
+  { step: "OWNER_ACTIVATED", label: "เปิดใช้งาน Owner" },
+  { step: "EMAIL_QUEUED", label: "เตรียมอีเมล Owner Portal" },
+  { step: "COMPLETED", label: "สร้างคลินิกสำเร็จ" },
+];
 
 const initialDraft: Draft = {
   clinicName: "",
@@ -28,9 +55,11 @@ const initialDraft: Draft = {
 export default function PublicLanding() {
   const [draft, setDraft] = useState(initialDraft);
   const [subdomainSuffix, setSubdomainSuffix] = useState("");
-  const [submitted, setSubmitted] = useState(false);
+  const [submitted, setSubmitted] = useState<SignupResult | null>(null);
+  const [currentStep, setCurrentStep] = useState<SignupStep | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [signupModalOpen, setSignupModalOpen] = useState(false);
   const generatedSubdomain = useMemo(() => {
     if (!subdomainSuffix) return "";
     const slug = draft.clinicName
@@ -42,17 +71,20 @@ export default function PublicLanding() {
       .slice(0, 24);
     return `${slug || "clinic"}-${subdomainSuffix}`;
   }, [draft.clinicName, subdomainSuffix]);
-  const previewUrl = useMemo(
-    () =>
-      generatedSubdomain
-        ? `http://${generatedSubdomain}.lvh.me:3000`
-        : "ระบบจะสร้าง URL หลังกรอกชื่อคลินิก",
-    [generatedSubdomain],
-  );
+
+  useEffect(() => {
+    if (!signupModalOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [signupModalOpen]);
 
   function update<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
-    setSubmitted(false);
+    setSubmitted(null);
+    setCurrentStep(null);
   }
 
   function updateClinicName(value: string) {
@@ -64,18 +96,12 @@ export default function PublicLanding() {
     event.preventDefault();
     setBusy(true);
     setError("");
+    setSubmitted(null);
+    setCurrentStep("VALIDATING");
+    setSignupModalOpen(true);
     try {
-      const signup = await apiRequest<{
-        ownerSession: OwnerSession;
-        branch: {
-          clinicId: string;
-          code: string;
-          name: string;
-          appUrl: string | null;
-        };
-      }>("/public/free-tier/signup", {
-        method: "POST",
-        body: JSON.stringify({
+      const signup = await streamSignup(
+        {
           clinicName: draft.clinicName.trim(),
           email: draft.email.trim().toLowerCase(),
           firstName: draft.firstName.trim(),
@@ -83,12 +109,15 @@ export default function PublicLanding() {
           ...(draft.phone.trim() ? { phone: draft.phone.trim() } : {}),
           password: draft.password,
           acceptedTermsVersion: "2026-10-28",
-        }),
+        },
+        setCurrentStep,
+      );
+      setSubmitted({
+        email: draft.email.trim().toLowerCase(),
+        emailDelivery: signup.emailDelivery,
+        appUrl: signup.appUrl,
       });
-      storeOwnerSession(signup.data.ownerSession);
-      setSubmitted(true);
-      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.href = "/owner";
+      setDraft((current) => ({ ...current, password: "", terms: false }));
     } catch (cause) {
       setError(
         cause instanceof ApiClientError
@@ -98,6 +127,14 @@ export default function PublicLanding() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function closeSignupModal() {
+    if (busy) return;
+    setSignupModalOpen(false);
+    setCurrentStep(null);
+    setSubmitted(null);
+    setError("");
   }
 
   return (
@@ -391,27 +428,126 @@ export default function PublicLanding() {
             </span>
           </label>
           <button className="public-submit" disabled={busy}>
-            {busy ? "กำลังสร้างและเข้าสู่คลินิก..." : "สร้างคลินิก Free Tier"}{" "}
+            {busy ? "กำลังสร้างคลินิก..." : "สร้างคลินิก Free Tier"}{" "}
             <span>→</span>
           </button>
-          {error && (
-            <div className="public-submit-result public-submit-error">
-              <b>สร้างคลินิกไม่สำเร็จ</b>
-              <span>{error}</span>
-            </div>
-          )}
-          {submitted && (
-            <div className="public-submit-result">
-              <b>สร้างคลินิกสำเร็จ</b>
-              <span>กำลังพาไปยัง {previewUrl}</span>
-            </div>
-          )}
           <p className="public-form-note">
             Organization, Clinic ID, Role OWNER และ Subscription
             จะถูกสร้างโดยระบบ
           </p>
         </form>
       </section>
+
+      {signupModalOpen && currentStep && (
+        <div className="signup-modal-backdrop" role="presentation">
+          <section
+            aria-describedby="signup-progress-description"
+            aria-labelledby="signup-progress-title"
+            aria-modal="true"
+            className={`signup-modal ${error ? "has-error" : submitted ? "is-complete" : ""}`}
+            role="dialog"
+          >
+            {!busy && (
+              <button
+                aria-label="ปิดหน้าต่าง"
+                className="signup-modal-close"
+                onClick={closeSignupModal}
+                type="button"
+              >
+                ×
+              </button>
+            )}
+            <header className="signup-modal-header">
+              <span className="signup-modal-symbol" aria-hidden="true">
+                {error ? "!" : submitted ? "✓" : <i />}
+              </span>
+              <div>
+                <p className="public-kicker">CLINIC SETUP</p>
+                <h2 id="signup-progress-title">
+                  {error
+                    ? "สร้างคลินิกไม่สำเร็จ"
+                    : submitted
+                      ? "คลินิกของคุณพร้อมแล้ว"
+                      : "กำลังสร้างคลินิกของคุณ"}
+                </h2>
+                <p id="signup-progress-description">
+                  {error
+                    ? "ตรวจสอบข้อความด้านล่าง แล้วลองสมัครอีกครั้ง"
+                    : submitted
+                      ? "ทุกขั้นตอนเสร็จสมบูรณ์ คุณสามารถเข้าสู่ระบบได้ทันที"
+                      : "กรุณารอสักครู่ และอย่าปิดหน้าต่างนี้"}
+                </p>
+              </div>
+            </header>
+
+            <ol className="signup-modal-steps" aria-live="polite">
+              {signupSteps.map((item, index) => {
+                const activeIndex = signupSteps.findIndex(
+                  (candidate) => candidate.step === currentStep,
+                );
+                const state = submitted
+                  ? "done"
+                  : index < activeIndex
+                    ? "done"
+                    : index === activeIndex
+                      ? error
+                        ? "failed"
+                        : "active"
+                      : "pending";
+                return (
+                  <li className={state} key={item.step}>
+                    <span aria-hidden="true">
+                      {state === "done" ? "✓" : state === "active" ? <i /> : index + 1}
+                    </span>
+                    <b>{item.label}</b>
+                    <small>
+                      {state === "done"
+                        ? "เสร็จแล้ว"
+                        : state === "active"
+                          ? "กำลังดำเนินการ..."
+                          : state === "failed"
+                            ? "เกิดข้อผิดพลาด"
+                            : "รอดำเนินการ"}
+                    </small>
+                  </li>
+                );
+              })}
+            </ol>
+
+            {error && <div className="signup-modal-error">{error}</div>}
+
+            {submitted && (
+              <div className="signup-modal-result">
+                <p>
+                  {submitted.emailDelivery === "SENT"
+                    ? `ส่งรายละเอียดไปที่ ${submitted.email} แล้ว`
+                    : submitted.emailDelivery === "PENDING"
+                      ? `กำลังส่งรายละเอียดไปที่ ${submitted.email}`
+                      : `คลินิกพร้อมใช้งาน แต่ยังส่งอีเมลไปที่ ${submitted.email} ไม่สำเร็จ`}
+                </p>
+                <div className="signup-modal-actions">
+                  {submitted.appUrl && (
+                    <a href={withLoginPath(submitted.appUrl)}>
+                      เข้าสู่ระบบคลินิก <span>→</span>
+                    </a>
+                  )}
+                  <Link href="/owner">เข้าสู่ Owner Portal</Link>
+                </div>
+              </div>
+            )}
+
+            {error && (
+              <button
+                className="signup-modal-retry"
+                onClick={closeSignupModal}
+                type="button"
+              >
+                กลับไปตรวจสอบข้อมูล
+              </button>
+            )}
+          </section>
+        </div>
+      )}
 
       <footer className="public-footer">
         <Link className="public-brand" href="/">
@@ -430,6 +566,122 @@ export default function PublicLanding() {
       </footer>
     </main>
   );
+}
+
+async function streamSignup(
+  body: Record<string, unknown>,
+  onProgress: (step: SignupStep) => void,
+): Promise<StreamSignupResult> {
+  const response = await fetch("/api/clinic/public/free-tier/signup/stream", {
+    method: "POST",
+    headers: { Accept: "text/event-stream", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => null);
+    throw new ApiClientError(
+      payload?.message ?? `API returned ${response.status}`,
+      response.status,
+      payload?.error?.code,
+      payload?.error?.details,
+    );
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let operationId: string | null = null;
+  let result: StreamSignupResult | null = null;
+
+  const processBlock = (block: string) => {
+    let event = "message";
+    const data: string[] = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      if (line.startsWith("data:")) data.push(line.slice(5).trim());
+    }
+    if (!data.length) return;
+    const payload = JSON.parse(data.join("\n"));
+    if (event === "operation" && payload.id) {
+      operationId = payload.id;
+    }
+    if (event === "progress" && payload.step && payload.step !== "FAILED") {
+      onProgress(payload.step as SignupStep);
+    }
+    if (event === "complete") {
+      onProgress("COMPLETED");
+      result = {
+        emailDelivery: payload.emailDelivery,
+        appUrl: payload.branch?.appUrl ?? null,
+      };
+    }
+    if (event === "error") {
+      throw new ApiClientError(
+        payload.message ?? "สร้างคลินิกไม่สำเร็จ",
+        400,
+        payload.code,
+      );
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      processBlock(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) break;
+  }
+  if (!result) {
+    if (operationId) return pollSignupStatus(operationId, onProgress);
+    throw new ApiClientError("การเชื่อมต่อ progress สิ้นสุดก่อนงานสำเร็จ", 502);
+  }
+  return result;
+}
+
+async function pollSignupStatus(
+  operationId: string,
+  onProgress: (step: SignupStep) => void,
+): Promise<StreamSignupResult> {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const response = await fetch(
+      `/api/clinic/public/free-tier/signup/${encodeURIComponent(operationId)}/status`,
+      { cache: "no-store" },
+    );
+    if (response.ok) {
+      const payload = await response.json();
+      const status = payload.data;
+      if (status.currentStep && status.currentStep !== "FAILED") {
+        onProgress(status.currentStep as SignupStep);
+      }
+      if (status.status === "SUCCEEDED") {
+        return {
+          emailDelivery:
+            status.emailDelivery === "SENT" || status.emailDelivery === "FAILED"
+              ? status.emailDelivery
+              : "PENDING",
+          appUrl: status.appUrl ?? null,
+        };
+      }
+      if (status.status === "FAILED") {
+        throw new ApiClientError(
+          status.errorMessage ?? "สร้างคลินิกไม่สำเร็จ",
+          400,
+          status.errorCode,
+        );
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new ApiClientError("หมดเวลารอตรวจสอบสถานะการสร้างคลินิก", 504);
+}
+
+function withLoginPath(appUrl: string) {
+  return `${appUrl.replace(/\/$/, "")}/login`;
 }
 
 function randomSuffix() {

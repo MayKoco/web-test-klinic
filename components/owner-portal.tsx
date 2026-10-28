@@ -67,6 +67,9 @@ const emptyBranch = (packageId = ""): BranchDraft => ({
   packageId,
 });
 
+const clinicLoginUrl = (appUrl: string) =>
+  `${appUrl.replace(/\/+$/, "")}/login`;
+
 export default function OwnerPortal() {
   const [credentials, setCredentials] = useState(localOwner);
   const [accessToken, setAccessToken] = useState("");
@@ -313,7 +316,7 @@ export default function OwnerPortal() {
                   <div><dt>Membership</dt><dd>{branch.membership?.role ?? "Not linked"}</dd></div>
                   <div><dt>Access</dt><dd>{branch.accessStatus}</dd></div>
                 </dl>
-                {branch.appUrl ? <a href={branch.appUrl}>ดู Clinic URL →</a> : <span className="muted">ยังไม่มี Clinic URL</span>}
+                {branch.appUrl ? <a href={clinicLoginUrl(branch.appUrl)}>ดู Clinic URL →</a> : <span className="muted">ยังไม่มี Clinic URL</span>}
               </article>
             ))}
           </div>

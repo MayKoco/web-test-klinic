@@ -22,9 +22,21 @@ async function proxy(request: Request, context: RouteContext<"/api/clinic/[...pa
       body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
       cache: "no-store",
     });
+    const upstreamContentType = upstream.headers.get("content-type") ?? "application/json";
+    if (upstreamContentType.includes("text/event-stream")) {
+      return new Response(upstream.body, {
+        status: upstream.status,
+        headers: {
+          "content-type": upstreamContentType,
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "x-accel-buffering": "no",
+        },
+      });
+    }
     return new Response(await upstream.text(), {
       status: upstream.status,
-      headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
+      headers: { "content-type": upstreamContentType },
     });
   } catch {
     return Response.json(
