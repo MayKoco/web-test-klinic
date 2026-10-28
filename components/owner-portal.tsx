@@ -1,8 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import {
+  clearOwnerSession,
+  OwnerSession,
+  readOwnerSession,
+  storeOwnerSession,
+} from "@/lib/owner-session";
 
 type Owner = {
   id: string;
@@ -76,22 +82,63 @@ export default function OwnerPortal() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  useEffect(() => {
+    const session = readOwnerSession();
+    if (!session) return;
+
+    Promise.resolve()
+      .then(async () => {
+        setAccessToken(session.accessToken);
+        setRefreshToken(session.refreshToken);
+        setOwner(session.owner);
+        setBusy(true);
+        return Promise.all([
+          apiRequest<Organization[]>(
+            "/owner/organizations?limit=100&sortBy=name&sortOrder=asc",
+            { token: session.accessToken },
+          ),
+          apiRequest<OwnerPackage[]>("/owner/packages", {
+            token: session.accessToken,
+          }),
+        ]);
+      })
+      .then(async ([organizationResult, packageResult]) => {
+        setOrganizations(organizationResult.data);
+        setPackages(packageResult.data);
+        setBranchDraft(emptyBranch(packageResult.data[0]?.id));
+        if (organizationResult.data[0]) {
+          const organizationId = organizationResult.data[0].id;
+          setSelectedOrganizationId(organizationId);
+          const branchResult = await apiRequest<Branch[]>(
+            `/owner/organizations/${encodeURIComponent(organizationId)}/branches?limit=100&sortBy=name&sortOrder=asc`,
+            { token: session.accessToken },
+          );
+          setBranches(branchResult.data);
+        }
+      })
+      .catch((cause) => {
+        clearOwnerSession();
+        setAccessToken("");
+        setRefreshToken("");
+        setOwner(null);
+        setError(message(cause));
+      })
+      .finally(() => setBusy(false));
+  }, []);
+
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     setError("");
     try {
-      const session = await apiRequest<{
-        accessToken: string;
-        refreshToken: string;
-        owner: Owner;
-      }>("/owner/auth/login", {
+      const session = await apiRequest<OwnerSession>("/owner/auth/login", {
         method: "POST",
         body: JSON.stringify({
           email: credentials.email.trim().toLowerCase(),
           password: credentials.password,
         }),
       });
+      storeOwnerSession(session.data);
       setAccessToken(session.data.accessToken);
       setRefreshToken(session.data.refreshToken);
       setOwner(session.data.owner);
@@ -177,6 +224,7 @@ export default function OwnerPortal() {
         body: JSON.stringify({ refreshToken }),
       }).catch(() => undefined);
     }
+    clearOwnerSession();
     setAccessToken("");
     setRefreshToken("");
     setOwner(null);

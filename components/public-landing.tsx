@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import { OwnerSession, storeOwnerSession } from "@/lib/owner-session";
 
 type Draft = {
   clinicName: string;
@@ -65,6 +66,7 @@ export default function PublicLanding() {
     setError("");
     try {
       const signup = await apiRequest<{
+        ownerSession: OwnerSession;
         branch: {
           clinicId: string;
           code: string;
@@ -83,44 +85,10 @@ export default function PublicLanding() {
           acceptedTermsVersion: "2026-10-28",
         }),
       });
-      const session = await apiRequest<{
-        accessToken: string;
-        user: { clinicId: string; email: string; roles: string[] };
-      }>("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({
-          clinicCode: signup.data.branch.code,
-          email: draft.email.trim().toLowerCase(),
-          password: draft.password,
-        }),
-      });
-      window.localStorage.setItem(
-        "klinic-test-token",
-        session.data.accessToken,
-      );
-      window.localStorage.setItem(
-        "klinic-test-profile",
-        JSON.stringify({
-          name: signup.data.branch.name,
-          clinicCode: signup.data.branch.code,
-        }),
-      );
+      storeOwnerSession(signup.data.ownerSession);
       setSubmitted(true);
-      const destinationBase = signup.data.branch.appUrl
-        ? `${signup.data.branch.appUrl}/appointments`
-        : "/appointments";
-      const handoff = new URLSearchParams({
-        session: JSON.stringify({
-          accessToken: session.data.accessToken,
-          profile: {
-            name: signup.data.branch.name,
-            clinicCode: signup.data.branch.code,
-          },
-        }),
-      });
-      // Cross-subdomain navigation cannot use the Next router.
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.href = `${destinationBase}#${handoff.toString()}`;
+      window.location.href = "/owner";
     } catch (cause) {
       setError(
         cause instanceof ApiClientError
