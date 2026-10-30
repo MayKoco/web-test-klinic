@@ -36,6 +36,12 @@ const groups = [
 ] as const;
 
 export default function AppSidebar({ active, profile }: SidebarProps) {
+  function logout() {
+    window.localStorage.removeItem("klinic-test-token");
+    window.localStorage.removeItem("klinic-test-profile");
+    window.location.replace("/login");
+  }
+
   return (
     <>
       <aside className="sidebar app-sidebar">
@@ -63,10 +69,16 @@ export default function AppSidebar({ active, profile }: SidebarProps) {
           ))}
         </nav>
 
-        <div className="sidebar-foot">
-          <span className="profile-avatar">{(profile?.name ?? "K").slice(0, 1).toUpperCase()}</span>
-          <div><b>{profile?.clinicCode ?? "Connected"}</b><small>{profile?.name ?? "Authenticated session"}</small></div>
-          <span className="online-dot" />
+        <div className="sidebar-session">
+          <div className="sidebar-foot">
+            <span className="profile-avatar">{(profile?.name ?? "K").slice(0, 1).toUpperCase()}</span>
+            <div><b>{profile?.clinicCode ?? "Connected"}</b><small>{profile?.name ?? "Authenticated session"}</small></div>
+            <span className="online-dot" />
+          </div>
+          <button className="sidebar-logout" type="button" onClick={logout}>
+            <span aria-hidden="true">↪</span>
+            ออกจากระบบ
+          </button>
         </div>
       </aside>
       <nav className="mobile-app-nav" aria-label="เมนูหลักบนมือถือ">
@@ -75,6 +87,9 @@ export default function AppSidebar({ active, profile }: SidebarProps) {
             <span aria-hidden="true">{item.icon}</span><b>{item.label.replace(" / Check-in", "")}</b>
           </a>
         )))}
+        <button className="mobile-logout" type="button" onClick={logout}>
+          <span aria-hidden="true">↪</span><b>ออกจากระบบ</b>
+        </button>
       </nav>
     </>
   );

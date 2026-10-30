@@ -9,7 +9,6 @@ type UserStatus = "ACTIVE" | "DISABLED" | "PENDING_ACTIVATION";
 type Role = { id: string; code: string; name: string; description?: string | null; isActive: boolean; isSystemRole?: boolean };
 type ClinicUser = {
   id: string;
-  username: string | null;
   email: string;
   firstName: string;
   lastName: string;
@@ -19,10 +18,10 @@ type ClinicUser = {
   roles: Role[];
 };
 type Profile = { name: string; clinicCode: string };
-type UserDraft = { username: string; firstName: string; lastName: string; email: string; password: string; roleIds: string[] };
+type UserDraft = { firstName: string; lastName: string; email: string; password: string; roleId: string };
 type ModalState = { mode: "create"; user: null } | { mode: "edit" | "password"; user: ClinicUser } | null;
 
-const emptyDraft: UserDraft = { username: "", firstName: "", lastName: "", email: "", password: "", roleIds: [] };
+const emptyDraft: UserDraft = { firstName: "", lastName: "", email: "", password: "", roleId: "" };
 const statusLabel: Record<UserStatus, string> = { ACTIVE: "ใช้งานอยู่", DISABLED: "ปิดใช้งาน", PENDING_ACTIVATION: "รอเปิดใช้งาน" };
 const roleDescription: Record<string, string> = {
   OWNER: "เจ้าของสาขาและสิทธิ์สูงสุด",
@@ -100,36 +99,32 @@ export default function UserManagementWorkspace() {
   }), [users]);
 
   function openCreate() {
-    setDraft({ ...emptyDraft, roleIds: roles.find((role) => role.code === "STAFF") ? [roles.find((role) => role.code === "STAFF")!.id] : [] });
+    setDraft({ ...emptyDraft, roleId: roles.find((role) => role.code === "STAFF")?.id ?? "" });
     setModal({ mode: "create", user: null });
     setNotice(null);
   }
 
   function openEdit(user: ClinicUser) {
-    setDraft({ username: user.username ?? "", firstName: user.firstName, lastName: user.lastName, email: user.email, password: "", roleIds: user.roles.map((role) => role.id) });
+    setDraft({ firstName: user.firstName, lastName: user.lastName, email: user.email, password: "", roleId: user.roles[0]?.id ?? "" });
     setModal({ mode: "edit", user });
     setNotice(null);
-  }
-
-  function toggleRole(roleId: string) {
-    setDraft((current) => ({ ...current, roleIds: current.roleIds.includes(roleId) ? current.roleIds.filter((id) => id !== roleId) : [...current.roleIds, roleId] }));
   }
 
   async function submitUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!modal || modal.mode === "password") return;
-    if (!draft.roleIds.length) { setNotice({ kind: "error", text: "กรุณาเลือกอย่างน้อย 1 บทบาท" }); return; }
+    if (!draft.roleId) { setNotice({ kind: "error", text: "กรุณาเลือก 1 บทบาท" }); return; }
     setSaving(true); setNotice(null);
     try {
       if (modal.mode === "create") {
         await apiRequest<ClinicUser>("/users", { method: "POST", token, body: JSON.stringify(draft) });
-        setNotice({ kind: "success", text: `สร้างบัญชี ${draft.username.toLowerCase()} เรียบร้อยแล้ว` });
+        setNotice({ kind: "success", text: `สร้างบัญชี ${draft.email.toLowerCase()} เรียบร้อยแล้ว` });
       } else {
         await apiRequest<ClinicUser>(`/users/${modal.user.id}`, {
           method: "PATCH", token,
-          body: JSON.stringify({ username: draft.username, firstName: draft.firstName, lastName: draft.lastName, email: draft.email }),
+          body: JSON.stringify({ firstName: draft.firstName, lastName: draft.lastName, email: draft.email }),
         });
-        await apiRequest(`/users/${modal.user.id}/roles`, { method: "PUT", token, body: JSON.stringify({ roleIds: draft.roleIds }) });
+        await apiRequest(`/users/${modal.user.id}/roles`, { method: "PUT", token, body: JSON.stringify({ roleIds: [draft.roleId] }) });
         setNotice({ kind: "success", text: `อัปเดตข้อมูล ${draft.firstName} ${draft.lastName} เรียบร้อยแล้ว` });
       }
       setModal(null);
@@ -192,7 +187,7 @@ export default function UserManagementWorkspace() {
           <header className="users-directory-head">
             <div><p className="eyebrow">DIRECTORY</p><h2>รายชื่อผู้ใช้งาน</h2><p>ใช้การปิดใช้งานแทนการลบบัญชี เพื่อเก็บประวัติการทำรายการ</p></div>
             <form className="users-filters" onSubmit={submitSearch}>
-              <label className="users-search"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ค้นหาชื่อ Username หรืออีเมล…" /></label>
+              <label className="users-search"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ค้นหาชื่อหรือนามสกุล หรืออีเมล…" /></label>
               <select value={status} onChange={(event) => { const value = event.target.value as typeof status; setStatus(value); void load(token, query, value); }}>
                 <option value="ALL">ทุกสถานะ</option><option value="ACTIVE">ใช้งานอยู่</option><option value="DISABLED">ปิดใช้งาน</option>
               </select>
@@ -204,7 +199,7 @@ export default function UserManagementWorkspace() {
             <div className="users-table-head"><span>ผู้ใช้งาน</span><span>บัญชีเข้าสู่ระบบ</span><span>บทบาท</span><span>สถานะ</span><span>จัดการ</span></div>
             {loading ? <div className="users-empty">กำลังโหลดผู้ใช้งาน…</div> : users.length === 0 ? <div className="users-empty"><span>⌕</span><b>ไม่พบผู้ใช้งาน</b><p>ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ</p></div> : users.map((user) => <article key={user.id}>
               <div className="users-identity"><span>{initials(user)}</span><div><b>{user.firstName} {user.lastName}</b><small>เพิ่มเมื่อ {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium" }).format(new Date(user.createdAt))}</small></div></div>
-              <div className="users-account"><b>{user.username ? `@${user.username}` : "ยังไม่มี Username"}</b><small>{user.email}</small></div>
+              <div className="users-account"><b>{user.email}</b><small>ใช้สำหรับเข้าสู่ระบบ</small></div>
               <div className="users-roles">{user.roles.length ? user.roles.map((role) => <span key={role.id} className={role.code.toLowerCase()}>{role.name}</span>) : <em>ยังไม่มีบทบาท</em>}</div>
               <span className={`users-status ${user.status.toLowerCase()}`}><i />{statusLabel[user.status]}</span>
               <div className="users-actions"><button title="แก้ไขข้อมูลและบทบาท" onClick={() => openEdit(user)}>แก้ไข</button><button title="ตั้งรหัสผ่านใหม่" onClick={() => { setPassword(""); setModal({ mode: "password", user }); }}>รหัสผ่าน</button><button className={user.status === "ACTIVE" ? "danger" : "enable"} disabled={saving || user.status === "PENDING_ACTIVATION"} onClick={() => void changeStatus(user)}>{user.status === "ACTIVE" ? "ปิดใช้" : "เปิดใช้"}</button></div>
@@ -221,15 +216,14 @@ export default function UserManagementWorkspace() {
         <div className="users-form-grid">
           <label>ชื่อจริง *<input required maxLength={100} value={draft.firstName} onChange={(event) => setDraft({ ...draft, firstName: event.target.value })} /></label>
           <label>นามสกุล *<input required maxLength={100} value={draft.lastName} onChange={(event) => setDraft({ ...draft, lastName: event.target.value })} /></label>
-          <label>Username *<input required minLength={3} maxLength={50} pattern="[A-Za-z0-9._-]+" autoComplete="off" value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} /><small>ตัวอักษรอังกฤษ ตัวเลข จุด ขีด และ underscore</small></label>
           <label>อีเมล *<input required type="email" maxLength={254} value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} /></label>
           {modal.mode === "create" && <label className="wide">รหัสผ่านเริ่มต้น *<input required minLength={8} maxLength={72} type="password" autoComplete="new-password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} /><small>อย่างน้อย 8 ตัวอักษร แจ้งให้ผู้ใช้เปลี่ยนหลังเข้าสู่ระบบครั้งแรก</small></label>}
         </div>
-        <fieldset className="users-role-picker"><legend>บทบาทและขอบเขตการทำงาน *</legend><p>เลือกได้มากกว่า 1 บทบาท ระบบจะรวมสิทธิ์ของบทบาทที่เลือก</p><div>{roles.map((role) => <label key={role.id} className={draft.roleIds.includes(role.id) ? "selected" : ""}><input type="checkbox" checked={draft.roleIds.includes(role.id)} onChange={() => toggleRole(role.id)} /><span>{role.code.slice(0, 1)}</span><div><b>{role.name}</b><small>{roleDescription[role.code] ?? role.description ?? role.code}</small></div><i>✓</i></label>)}</div></fieldset>
+        <fieldset className="users-role-picker"><legend>บทบาทและขอบเขตการทำงาน *</legend><p>ผู้ใช้งานหนึ่งคนเลือกได้หนึ่งบทบาท</p><div>{roles.map((role) => <label key={role.id} className={draft.roleId === role.id ? "selected" : ""}><input type="radio" name="clinic-role" checked={draft.roleId === role.id} onChange={() => setDraft({ ...draft, roleId: role.id })} /><span>{role.code.slice(0, 1)}</span><div><b>{role.name}</b><small>{roleDescription[role.code] ?? role.description ?? role.code}</small></div><i>✓</i></label>)}</div></fieldset>
         <footer><button className="ghost-button" type="button" disabled={saving} onClick={() => setModal(null)}>ยกเลิก</button><button className="primary-button" type="submit" disabled={saving}>{saving ? "กำลังบันทึก…" : modal.mode === "create" ? "สร้างผู้ใช้งาน" : "บันทึกการแก้ไข"}</button></footer>
       </form>
     </div>}
 
-    {modal?.mode === "password" && <div className="users-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setModal(null); }}><form className="users-modal users-password-modal" onSubmit={submitPassword}><header><div><p className="eyebrow">RESET PASSWORD</p><h2>ตั้งรหัสผ่านใหม่</h2><p>{modal.user.firstName} {modal.user.lastName} · {modal.user.username ? `@${modal.user.username}` : modal.user.email}</p></div><button type="button" onClick={() => setModal(null)}>×</button></header><label>รหัสผ่านใหม่ *<input autoFocus required minLength={8} maxLength={72} type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /><small>อย่างน้อย 8 ตัวอักษร</small></label><div className="users-security-note"><span>!</span><p>บัญชีจะใช้รหัสผ่านใหม่ในการเข้าสู่ระบบครั้งถัดไป</p></div><footer><button className="ghost-button" type="button" disabled={saving} onClick={() => setModal(null)}>ยกเลิก</button><button className="primary-button" type="submit" disabled={saving}>{saving ? "กำลังบันทึก…" : "ยืนยันรหัสผ่านใหม่"}</button></footer></form></div>}
+    {modal?.mode === "password" && <div className="users-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setModal(null); }}><form className="users-modal users-password-modal" onSubmit={submitPassword}><header><div><p className="eyebrow">RESET PASSWORD</p><h2>ตั้งรหัสผ่านใหม่</h2><p>{modal.user.firstName} {modal.user.lastName} · {modal.user.email}</p></div><button type="button" onClick={() => setModal(null)}>×</button></header><label>รหัสผ่านใหม่ *<input autoFocus required minLength={8} maxLength={72} type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /><small>อย่างน้อย 8 ตัวอักษร</small></label><div className="users-security-note"><span>!</span><p>บัญชีจะใช้รหัสผ่านใหม่ในการเข้าสู่ระบบครั้งถัดไป</p></div><footer><button className="ghost-button" type="button" disabled={saving} onClick={() => setModal(null)}>ยกเลิก</button><button className="primary-button" type="submit" disabled={saving}>{saving ? "กำลังบันทึก…" : "ยืนยันรหัสผ่านใหม่"}</button></footer></form></div>}
   </main>;
 }

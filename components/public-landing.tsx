@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { ApiClientError } from "@/lib/api";
 
 type Draft = {
   clinicName: string;
+  subdomain: string;
   firstName: string;
   lastName: string;
   email: string;
@@ -38,12 +39,13 @@ const signupSteps: Array<{ step: SignupStep; label: string }> = [
   { step: "CLINIC_PROVISIONING", label: "เตรียม Clinic และสิทธิ์" },
   { step: "CLINIC_READY", label: "เปิดแพ็กเกจ Free" },
   { step: "OWNER_ACTIVATED", label: "เปิดใช้งาน Owner" },
-  { step: "EMAIL_QUEUED", label: "เตรียมอีเมล Owner Portal" },
+  { step: "EMAIL_QUEUED", label: "เตรียมอีเมล Clinic Login" },
   { step: "COMPLETED", label: "สร้างคลินิกสำเร็จ" },
 ];
 
 const initialDraft: Draft = {
   clinicName: "",
+  subdomain: "",
   firstName: "",
   lastName: "",
   email: "",
@@ -54,23 +56,40 @@ const initialDraft: Draft = {
 
 export default function PublicLanding() {
   const [draft, setDraft] = useState(initialDraft);
-  const [subdomainSuffix, setSubdomainSuffix] = useState("");
+  const [subdomainEdited, setSubdomainEdited] = useState(false);
+  const [domainStatus, setDomainStatus] = useState<
+    "idle" | "checking" | "available" | "unavailable" | "error"
+  >("idle");
   const [submitted, setSubmitted] = useState<SignupResult | null>(null);
   const [currentStep, setCurrentStep] = useState<SignupStep | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [signupModalOpen, setSignupModalOpen] = useState(false);
-  const generatedSubdomain = useMemo(() => {
-    if (!subdomainSuffix) return "";
-    const slug = draft.clinicName
-      .trim()
-      .toLowerCase()
-      .normalize("NFKD")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 24);
-    return `${slug || "clinic"}-${subdomainSuffix}`;
-  }, [draft.clinicName, subdomainSuffix]);
+
+  useEffect(() => {
+    if (!/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/.test(draft.subdomain)) {
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setDomainStatus("checking");
+      try {
+        const response = await fetch(
+          `/api/clinic/public/free-tier/subdomains/${encodeURIComponent(draft.subdomain)}`,
+          { cache: "no-store", signal: controller.signal },
+        );
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.message);
+        setDomainStatus(payload.data.available ? "available" : "unavailable");
+      } catch (cause) {
+        if ((cause as Error).name !== "AbortError") setDomainStatus("error");
+      }
+    }, 350);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [draft.subdomain]);
 
   useEffect(() => {
     if (!signupModalOpen) return;
@@ -88,8 +107,14 @@ export default function PublicLanding() {
   }
 
   function updateClinicName(value: string) {
-    update("clinicName", value);
-    if (value.trim() && !subdomainSuffix) setSubdomainSuffix(randomSuffix());
+    setDraft((current) => ({
+      ...current,
+      clinicName: value,
+      ...(!subdomainEdited ? { subdomain: clinicSlug(value) } : {}),
+    }));
+    setSubmitted(null);
+    setCurrentStep(null);
+    setDomainStatus("idle");
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -103,6 +128,7 @@ export default function PublicLanding() {
       const signup = await streamSignup(
         {
           clinicName: draft.clinicName.trim(),
+          subdomain: draft.subdomain,
           email: draft.email.trim().toLowerCase(),
           firstName: draft.firstName.trim(),
           lastName: draft.lastName.trim(),
@@ -150,7 +176,6 @@ export default function PublicLanding() {
         <nav aria-label="เมนูเว็บไซต์">
           <a href="#features">จุดเด่น</a>
           <a href="#pricing">แพ็กเกจ</a>
-          <Link href="/owner">Owner Portal</Link>
           <Link className="public-nav-cta" href="/login">
             เข้าสู่ระบบคลินิก
           </Link>
@@ -342,17 +367,42 @@ export default function PublicLanding() {
                 placeholder="เช่น Happy Clinic Bangkok"
               />
             </label>
-            <div className="public-wide public-generated-domain">
-              <span>URL คลินิก Free Tier</span>
-              <b>
-                {generatedSubdomain
-                  ? `${generatedSubdomain}.klinic.app`
-                  : "ระบบจะสร้าง URL หลังกรอกชื่อคลินิก"}
-              </b>
-              <small>
-                <i /> ระบบตรวจชื่อซ้ำและเปลี่ยนรหัสท้ายให้อัตโนมัติ
+            <label className="public-wide">
+              URL กลุ่มคลินิก
+              <div className="public-domain-input">
+                <input
+                  required
+                  minLength={3}
+                  maxLength={63}
+                  pattern="[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?"
+                  value={draft.subdomain}
+                  onChange={(event) => {
+                    setSubdomainEdited(true);
+                    setDomainStatus("idle");
+                    update(
+                      "subdomain",
+                      event.target.value
+                        .toLowerCase()
+                        .replace(/[^a-z0-9-]/g, "")
+                        .slice(0, 63),
+                    );
+                  }}
+                  placeholder="happy-clinic"
+                />
+                <span>.klinic.app</span>
+              </div>
+              <small className={`public-domain-status ${domainStatus}`}>
+                {domainStatus === "checking"
+                  ? "กำลังตรวจสอบชื่อ..."
+                  : domainStatus === "available"
+                    ? "✓ ชื่อนี้พร้อมใช้งาน"
+                    : domainStatus === "unavailable"
+                      ? "ชื่อนี้ถูกใช้แล้ว กรุณาเลือกชื่อใหม่"
+                      : domainStatus === "error"
+                        ? "ยังตรวจสอบชื่อไม่ได้ ระบบจะตรวจอีกครั้งเมื่อสมัคร"
+                        : "ใช้ URL นี้สำหรับเลือกสาขาและเข้าสู่ระบบ"}
               </small>
-            </div>
+            </label>
           </fieldset>
 
           <fieldset>
@@ -427,7 +477,10 @@ export default function PublicLanding() {
               <small>ระบบจะบันทึก version และเวลาที่ยอมรับ</small>
             </span>
           </label>
-          <button className="public-submit" disabled={busy}>
+          <button
+            className="public-submit"
+            disabled={busy || domainStatus === "checking" || domainStatus === "unavailable"}
+          >
             {busy ? "กำลังสร้างคลินิก..." : "สร้างคลินิก Free Tier"}{" "}
             <span>→</span>
           </button>
@@ -531,7 +584,6 @@ export default function PublicLanding() {
                       เข้าสู่ระบบคลินิก <span>→</span>
                     </a>
                   )}
-                  <Link href="/owner">เข้าสู่ Owner Portal</Link>
                 </div>
               </div>
             )}
@@ -561,7 +613,6 @@ export default function PublicLanding() {
         <nav>
           <Link href="/activation">Activation Lab</Link>
           <Link href="/owner/setup">Platform Setup</Link>
-          <Link href="/owner">Owner Portal</Link>
         </nav>
       </footer>
     </main>
@@ -684,11 +735,12 @@ function withLoginPath(appUrl: string) {
   return `${appUrl.replace(/\/$/, "")}/login`;
 }
 
-function randomSuffix() {
-  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
-  const values = new Uint8Array(4);
-  crypto.getRandomValues(values);
-  return Array.from(values, (value) => alphabet[value % alphabet.length]).join(
-    "",
-  );
+function clinicSlug(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 63);
 }
