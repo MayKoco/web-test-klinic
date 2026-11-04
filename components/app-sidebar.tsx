@@ -10,32 +10,40 @@ type SidebarProps = {
   profile?: ClinicSessionProfile | null;
 };
 
-const groups = [
+type MenuItem = {
+  id: SidebarProps["active"];
+  href: string;
+  icon: string;
+  label: string;
+  anyPermission?: string[];
+};
+
+const groups: Array<{ label: string; ownerOnly?: boolean; items: MenuItem[] }> = [
   {
     label: "ภาพรวมและบริการ",
     items: [
       { id: "dashboard", href: "/dashboard", icon: "⌂", label: "แดชบอร์ด" },
-      { id: "patients", href: "/patients", icon: "○", label: "ลูกค้า" },
-      { id: "users", href: "/users", icon: "♙", label: "พนักงาน" },
-      { id: "scheduling", href: "/appointments", icon: "▦", label: "นัดหมาย" },
-      { id: "queue", href: "/queue", icon: "≋", label: "คิว / Check-in" },
-      { id: "treatments", href: "/treatments", icon: "+", label: "การรักษา" },
+      { id: "patients", href: "/patients", icon: "○", label: "ลูกค้า", anyPermission: ["PATIENT_VIEW"] },
+      { id: "users", href: "/users", icon: "♙", label: "พนักงาน", anyPermission: ["USER_VIEW"] },
+      { id: "scheduling", href: "/appointments", icon: "▦", label: "นัดหมาย", anyPermission: ["APPOINTMENT_VIEW"] },
+      { id: "queue", href: "/queue", icon: "≋", label: "คิว / Check-in", anyPermission: ["QUEUE_VIEW"] },
+      { id: "treatments", href: "/treatments", icon: "+", label: "การรักษา", anyPermission: ["TREATMENT_VIEW"] },
     ],
   },
   {
     label: "สินค้าและการเงิน",
     items: [
-      { id: "catalog", href: "/catalog", icon: "◇", label: "ผลิตภัณฑ์และบริการ" },
-      { id: "inventory", href: "/inventory", icon: "▤", label: "คลังสินค้า / Lot" },
-      { id: "sales", href: "/sales", icon: "฿", label: "การขาย" },
-      { id: "payments", href: "/payments", icon: "▭", label: "การชำระเงิน" },
+      { id: "catalog", href: "/catalog", icon: "◇", label: "ผลิตภัณฑ์และบริการ", anyPermission: ["CATALOG_VIEW"] },
+      { id: "inventory", href: "/inventory", icon: "▤", label: "คลังสินค้า / Lot", anyPermission: ["CATALOG_VIEW"] },
+      { id: "sales", href: "/sales", icon: "฿", label: "การขาย", anyPermission: ["SALE_VIEW"] },
+      { id: "payments", href: "/payments", icon: "▭", label: "การชำระเงิน", anyPermission: ["PAYMENT_VIEW"] },
     ],
   },
   {
       label: "ตั้งค่าคลินิก",
       items: [
-      { id: "resources", href: "/resources", icon: "✚", label: "แพทย์และห้องตรวจ" },
-      { id: "settings", href: "/settings", icon: "⚙", label: "ข้อมูลพื้นฐานและตั้งค่า" },
+      { id: "resources", href: "/resources", icon: "✚", label: "แพทย์และห้องตรวจ", anyPermission: ["DOCTOR_VIEW", "DOCTOR_SCHEDULE_VIEW"] },
+      { id: "settings", href: "/settings", icon: "⚙", label: "ข้อมูลพื้นฐานและตั้งค่า", anyPermission: ["SETTING_VIEW"] },
     ],
   },
   {
@@ -45,16 +53,13 @@ const groups = [
       { id: "organization", href: "/organization", icon: "⌘", label: "องค์กรและสาขา" },
     ],
   },
-] as const;
+];
 
 export default function AppSidebar({ active, profile }: SidebarProps) {
   const [ownerResolved, setOwnerResolved] = useState(false);
+  const [permissions, setPermissions] = useState<string[] | null>(null);
 
   useEffect(() => {
-    if (profile?.roles) {
-      return;
-    }
-
     const token = window.localStorage.getItem("klinic-test-token");
     if (!token) {
       return;
@@ -64,6 +69,7 @@ export default function AppSidebar({ active, profile }: SidebarProps) {
     apiRequest<{ roles: string[]; permissions: string[] }>("/auth/me/permissions", { token })
       .then((result) => {
         if (cancelled) return;
+        setPermissions(result.data.permissions);
         setOwnerResolved(result.data.roles.includes("OWNER"));
         const saved = window.localStorage.getItem("klinic-test-profile");
         if (!saved) return;
@@ -74,14 +80,23 @@ export default function AppSidebar({ active, profile }: SidebarProps) {
         );
       })
       .catch(() => {
-        if (!cancelled) setOwnerResolved(false);
+        if (!cancelled) {
+          setPermissions([]);
+          setOwnerResolved(false);
+        }
       });
 
     return () => { cancelled = true; };
   }, [profile]);
 
   const ownerVisible = profile?.roles ? hasOwnerRole(profile) : ownerResolved;
-  const visibleGroups = groups.filter((group) => !("ownerOnly" in group) || !group.ownerOnly || ownerVisible);
+  const visibleGroups = groups
+    .filter((group) => !group.ownerOnly || ownerVisible)
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.anyPermission || item.anyPermission.some((permission) => permissions?.includes(permission))),
+    }))
+    .filter((group) => group.items.length > 0);
 
   function logout() {
     window.localStorage.removeItem("klinic-test-token");

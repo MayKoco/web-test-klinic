@@ -1483,6 +1483,16 @@ input:focus,select:focus{border-color:#5c9af1;box-shadow:0 0 0 4px rgba(23,105,2
 .users-role-picker small{margin-top:3px;color:#8693a4;font-size:8px;}
 .users-role-picker label > i{width:20px;height:20px;display:grid;place-items:center;border-radius:50%;color:transparent;background:#edf1f5;font-size:9px;font-style:normal;}
 .users-role-picker label.selected > i{color:#fff;background:#1769e8;}
+.users-doctor-profile{margin:18px 25px 0;padding:16px;border:1px solid #b9d6fa;border-radius:14px;background:#f5f9ff;}
+.users-doctor-profile legend{display:flex;align-items:center;gap:9px;padding:0 7px;color:#29445f;}
+.users-doctor-profile legend > span{width:29px;height:29px;display:grid;place-items:center;border-radius:9px;color:#1769e8;background:#e2efff;font-size:13px;font-weight:850;}
+.users-doctor-profile legend b,.users-doctor-profile legend small{display:block;}
+.users-doctor-profile legend b{font-size:11px;}
+.users-doctor-profile legend small{margin-top:2px;color:#7d8da1;font-size:8px;font-weight:500;}
+.users-doctor-profile > div{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;}
+.users-doctor-profile label{color:#43546a;font-size:9px;font-weight:750;}
+.users-doctor-profile input{width:100%;margin-top:6px;padding:10px 11px;border:1px solid #d5e1ef;border-radius:9px;outline:0;background:#fff;font:inherit;font-weight:500;}
+.users-doctor-profile input:focus{border-color:#6ca2e9;box-shadow:0 0 0 3px rgba(23,105,232,0.08);}
 .users-modal > footer{display:flex;justify-content:flex-end;gap:8px;margin-top:21px;padding:15px 25px 21px;border-top:1px solid #e8edf2;}
 .users-modal > footer .primary-button{min-height:42px;}
 .users-password-modal{width:min(460px,100%);}
@@ -1490,8 +1500,13 @@ input:focus,select:focus{border-color:#5c9af1;box-shadow:0 0 0 4px rgba(23,105,2
 .users-security-note{display:flex;align-items:center;gap:9px;margin:15px 25px 0;padding:11px;border-radius:10px;color:#73581c;background:#fff7e3;}
 .users-security-note span{width:23px;height:23px;display:grid;place-items:center;border-radius:50%;background:#ffe7aa;font-size:10px;font-weight:850;}
 .users-security-note p{margin:0;font-size:8px;}
+.catalog-access-denied{max-width:650px;margin:80px auto;padding:48px;text-align:center;}
+.catalog-access-denied > span{width:54px;height:54px;display:grid;place-items:center;margin:0 auto 16px;border-radius:50%;color:#a65d14;background:#fff0d8;font-size:23px;font-weight:850;}
+.catalog-access-denied h1{margin:7px 0 10px;color:#26394f;font-size:24px;}
+.catalog-access-denied > p:not(.eyebrow){max-width:470px;margin:0 auto 24px;color:#77869a;font-size:11px;line-height:1.7;}
+.catalog-access-denied .primary-button{display:inline-flex;text-decoration:none;}
 @media (max-width:1160px){.users-overview{grid-template-columns:1fr 1fr;}.users-directory-head{align-items:stretch;flex-direction:column;}.users-filters{width:100%;}.users-search{min-width:210px;flex:1 1 auto;}.users-filters select{width:135px;flex:0 0 135px;}.users-table-head{display:none;}.users-table > article{grid-template-columns:minmax(210px,1fr) auto;gap:10px 18px;padding:16px 20px;}.users-identity{grid-column:1;grid-row:1;}.users-status{grid-column:2;grid-row:1;justify-self:end;}.users-account{grid-column:1;grid-row:2;}.users-roles{grid-column:2;grid-row:2;justify-content:flex-end;}.users-actions{grid-column:1/-1;grid-row:3;justify-content:flex-end;padding-top:10px;border-top:1px solid #edf1f5;}}
-@media (max-width:760px){.users-topbar{flex-direction:column;}.users-topbar .top-actions,.users-create{width:100%;}.users-overview{grid-template-columns:1fr 1fr;}.users-summary-card{min-height:90px;padding:12px;}.users-summary-card > span{width:34px;height:34px;}.users-summary-card b{font-size:20px;}.users-directory-head{padding:17px;}.users-filters{align-items:stretch;flex-direction:column;}.users-search,.users-filters select{width:100%;min-width:0;flex:none;}.users-table > article{grid-template-columns:1fr auto;padding:14px 16px;}.users-account,.users-roles{grid-column:1/-1;}.users-roles{justify-content:flex-start;}.users-modal-backdrop{padding:0;}.users-modal{width:100%;max-height:100vh;min-height:100vh;border-radius:0;}.users-form-grid,.users-role-picker > div{grid-template-columns:1fr;}.users-form-grid .wide{grid-column:auto;}}
+@media (max-width:760px){.users-topbar{flex-direction:column;}.users-topbar .top-actions,.users-create{width:100%;}.users-overview{grid-template-columns:1fr 1fr;}.users-summary-card{min-height:90px;padding:12px;}.users-summary-card > span{width:34px;height:34px;}.users-summary-card b{font-size:20px;}.users-directory-head{padding:17px;}.users-filters{align-items:stretch;flex-direction:column;}.users-search,.users-filters select{width:100%;min-width:0;flex:none;}.users-table > article{grid-template-columns:1fr auto;padding:14px 16px;}.users-account,.users-roles{grid-column:1/-1;}.users-roles{justify-content:flex-start;}.users-modal-backdrop{padding:0;}.users-modal{width:100%;max-height:100vh;min-height:100vh;border-radius:0;}.users-form-grid,.users-role-picker > div,.users-doctor-profile > div{grid-template-columns:1fr;}.users-form-grid .wide{grid-column:auto;}}
 /* Public landing and self-service onboarding */
 .public-site{min-height:100vh;overflow:hidden;color:#17253b;background:#fff;}
 .public-nav{width:min(1240px,calc(100% - 48px));height:82px;display:flex;align-items:center;justify-content:space-between;margin:0 auto;}

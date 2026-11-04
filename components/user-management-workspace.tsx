@@ -19,9 +19,18 @@ type ClinicUser = {
 };
 type Profile = { name: string; clinicCode: string };
 type UserDraft = { firstName: string; lastName: string; email: string; password: string; roleId: string };
+type DoctorDraft = {
+  memberNo: string;
+  prefix: string;
+  nickname: string;
+  phone: string;
+  licenseNo: string;
+  specialty: string;
+};
 type ModalState = { mode: "create"; user: null } | { mode: "edit" | "password"; user: ClinicUser } | null;
 
 const emptyDraft: UserDraft = { firstName: "", lastName: "", email: "", password: "", roleId: "" };
+const emptyDoctorDraft: DoctorDraft = { memberNo: "", prefix: "", nickname: "", phone: "", licenseNo: "", specialty: "" };
 const statusLabel: Record<UserStatus, string> = { ACTIVE: "ใช้งานอยู่", DISABLED: "ปิดใช้งาน", PENDING_ACTIVATION: "รอเปิดใช้งาน" };
 const roleDescription: Record<string, string> = {
   OWNER: "เจ้าของสาขาและสิทธิ์สูงสุด",
@@ -53,7 +62,11 @@ export default function UserManagementWorkspace() {
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [modal, setModal] = useState<ModalState>(null);
   const [draft, setDraft] = useState<UserDraft>(emptyDraft);
+  const [doctorDraft, setDoctorDraft] = useState<DoctorDraft>(emptyDoctorDraft);
   const [password, setPassword] = useState("");
+
+  const selectedRole = roles.find((role) => role.id === draft.roleId);
+  const isCreatingDoctor = modal?.mode === "create" && selectedRole?.code === "DOCTOR";
 
   const load = useCallback(async (activeToken: string, search = "", activeStatus: typeof status = "ALL") => {
     setLoading(true);
@@ -100,6 +113,7 @@ export default function UserManagementWorkspace() {
 
   function openCreate() {
     setDraft({ ...emptyDraft, roleId: roles.find((role) => role.code === "STAFF")?.id ?? "" });
+    setDoctorDraft(emptyDoctorDraft);
     setModal({ mode: "create", user: null });
     setNotice(null);
   }
@@ -117,7 +131,19 @@ export default function UserManagementWorkspace() {
     setSaving(true); setNotice(null);
     try {
       if (modal.mode === "create") {
-        await apiRequest<ClinicUser>("/users", { method: "POST", token, body: JSON.stringify(draft) });
+        const doctorProfile = isCreatingDoctor ? {
+          memberNo: doctorDraft.memberNo.trim(),
+          prefix: doctorDraft.prefix.trim() || undefined,
+          nickname: doctorDraft.nickname.trim() || undefined,
+          phone: doctorDraft.phone.trim() || undefined,
+          licenseNo: doctorDraft.licenseNo.trim() || undefined,
+          specialty: doctorDraft.specialty.trim() || undefined,
+        } : undefined;
+        await apiRequest<ClinicUser>("/users", {
+          method: "POST",
+          token,
+          body: JSON.stringify({ ...draft, doctorProfile }),
+        });
         setNotice({ kind: "success", text: `สร้างบัญชี ${draft.email.toLowerCase()} เรียบร้อยแล้ว` });
       } else {
         await apiRequest<ClinicUser>(`/users/${modal.user.id}`, {
@@ -220,6 +246,17 @@ export default function UserManagementWorkspace() {
           {modal.mode === "create" && <label className="wide">รหัสผ่านเริ่มต้น *<input required minLength={8} maxLength={72} type="password" autoComplete="new-password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} /><small>อย่างน้อย 8 ตัวอักษร แจ้งให้ผู้ใช้เปลี่ยนหลังเข้าสู่ระบบครั้งแรก</small></label>}
         </div>
         <fieldset className="users-role-picker"><legend>บทบาทและขอบเขตการทำงาน *</legend><p>ผู้ใช้งานหนึ่งคนเลือกได้หนึ่งบทบาท</p><div>{roles.map((role) => <label key={role.id} className={draft.roleId === role.id ? "selected" : ""}><input type="radio" name="clinic-role" checked={draft.roleId === role.id} onChange={() => setDraft({ ...draft, roleId: role.id })} /><span>{role.code.slice(0, 1)}</span><div><b>{role.name}</b><small>{roleDescription[role.code] ?? role.description ?? role.code}</small></div><i>✓</i></label>)}</div></fieldset>
+        {isCreatingDoctor && <fieldset className="users-doctor-profile">
+          <legend><span>✚</span><div><b>ข้อมูลแพทย์</b><small>สร้าง Doctor profile และเชื่อมกับบัญชีนี้อัตโนมัติ</small></div></legend>
+          <div>
+            <label>รหัสสมาชิกแพทย์ *<input required maxLength={100} value={doctorDraft.memberNo} onChange={(event) => setDoctorDraft({ ...doctorDraft, memberNo: event.target.value })} placeholder="เช่น MED-001" /></label>
+            <label>คำนำหน้า<input maxLength={50} value={doctorDraft.prefix} onChange={(event) => setDoctorDraft({ ...doctorDraft, prefix: event.target.value })} placeholder="เช่น นพ. หรือ พญ." /></label>
+            <label>ชื่อเล่น<input maxLength={100} value={doctorDraft.nickname} onChange={(event) => setDoctorDraft({ ...doctorDraft, nickname: event.target.value })} placeholder="ชื่อที่ใช้เรียก" /></label>
+            <label>เบอร์โทรศัพท์<input maxLength={50} value={doctorDraft.phone} onChange={(event) => setDoctorDraft({ ...doctorDraft, phone: event.target.value })} placeholder="เช่น 081-234-5678" /></label>
+            <label>เลขใบประกอบวิชาชีพ<input maxLength={100} value={doctorDraft.licenseNo} onChange={(event) => setDoctorDraft({ ...doctorDraft, licenseNo: event.target.value })} placeholder="เช่น ว.12345" /></label>
+            <label>ความเชี่ยวชาญ<input maxLength={200} value={doctorDraft.specialty} onChange={(event) => setDoctorDraft({ ...doctorDraft, specialty: event.target.value })} placeholder="เช่น Dermatology" /></label>
+          </div>
+        </fieldset>}
         <footer><button className="ghost-button" type="button" disabled={saving} onClick={() => setModal(null)}>ยกเลิก</button><button className="primary-button" type="submit" disabled={saving}>{saving ? "กำลังบันทึก…" : modal.mode === "create" ? "สร้างผู้ใช้งาน" : "บันทึกการแก้ไข"}</button></footer>
       </form>
     </div>}

@@ -30,6 +30,7 @@ const localDT=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneO
 
 export default function CatalogWorkspace(){
   const [token,setToken]=useState(""); const [profile,setProfile]=useState<{name:string;clinicCode:string}|null>(null); const [tab,setTab]=useState<Tab>("CATALOG");
+  const [authorized,setAuthorized]=useState<boolean|null>(null);
   const [items,setItems]=useState<Item[]>([]); const [promos,setPromos]=useState<Promo[]>([]); const [patients,setPatients]=useState<Patient[]>([]); const [sales,setSales]=useState<Sale[]>([]);
   const [loading,setLoading]=useState(true); const [saving,setSaving]=useState(false); const [notice,setNotice]=useState<{kind:"success"|"error";text:string}|null>(null);
   const [filter,setFilter]=useState<"ALL"|CType>("ALL"); const [search,setSearch]=useState(""); const [draft,setDraft]=useState<Draft>(blank); const [activate,setActivate]=useState(true);
@@ -44,7 +45,7 @@ export default function CatalogWorkspace(){
   const load=useCallback(async(t:string,keep=false)=>{setLoading(true);try{const [a,b,c,d]=await Promise.all([
     apiRequest<Item[]>("/catalog/items?limit=100&sortBy=createdAt&sortOrder=desc",{token:t}),apiRequest<Promo[]>("/promotions?limit=100&sortBy=createdAt&sortOrder=desc",{token:t}),apiRequest<Patient[]>("/patients?limit=100&sortBy=createdAt&sortOrder=desc",{token:t}),apiRequest<Sale[]>("/sales?limit=100&sortBy=createdAt&sortOrder=desc",{token:t})]);
     setItems(a.data);setPromos(b.data);setPatients(c.data);setSales(d.data);if(!keep)setNotice(null);}catch(e){setNotice({kind:"error",text:err(e)});}finally{setLoading(false);}},[]);
-  useEffect(()=>{const t=localStorage.getItem("klinic-test-token");const p=localStorage.getItem("klinic-test-profile");queueMicrotask(()=>{if(!t){setLoading(false);return;}setToken(t);if(p)try{setProfile(JSON.parse(p));}catch{setProfile(null);}void load(t);});},[load]);
+  useEffect(()=>{const t=localStorage.getItem("klinic-test-token");const p=localStorage.getItem("klinic-test-profile");queueMicrotask(async()=>{if(!t){setLoading(false);setAuthorized(false);return;}setToken(t);if(p)try{setProfile(JSON.parse(p));}catch{setProfile(null);}try{const access=await apiRequest<{permissions:string[]}>("/auth/me/permissions",{token:t});const allowed=access.data.permissions.includes("CATALOG_VIEW");setAuthorized(allowed);if(allowed)await load(t);}catch(e){setAuthorized(false);setLoading(false);setNotice({kind:"error",text:err(e)});}});},[load]);
   useEffect(()=>{const requested=new URLSearchParams(window.location.search).get("tab");if(["CATALOG","BUNDLES","SALES","REPORTS"].includes(requested??""))queueMicrotask(()=>setTab(requested as Tab));},[]);
 
   const active=useMemo(()=>items.filter(i=>i.status==="ACTIVE"),[items]); const activePromos=useMemo(()=>promos.filter(p=>p.status==="ACTIVE"),[promos]);
@@ -53,6 +54,8 @@ export default function CatalogWorkspace(){
   const action=async(fn:()=>Promise<unknown>,text:string,reload=true)=>{setSaving(true);setNotice(null);try{await fn();setNotice({kind:"success",text});if(reload)await load(token,true);return true;}catch(e){setNotice({kind:"error",text:err(e)});return false;}finally{setSaving(false);}};
   const components=(v:Record<string,number>)=>Object.entries(v).filter(([,q])=>q>0).map(([itemId,quantity],sortOrder)=>({itemId,quantity,sortOrder}));
   const setComp=(kind:"pack"|"promo",id:string,q:number)=>{if(kind==="pack")setPack(d=>({...d,components:{...d.components,[id]:Math.max(0,q)}}));else setPromo(d=>({...d,components:{...d.components,[id]:Math.max(0,q)}}));};
+
+  if(authorized===false)return <main className="app-shell"><AppSidebar active="catalog" profile={profile}/><section className="workspace"><div className="content"><section className="panel catalog-access-denied"><span>!</span><p className="eyebrow">ACCESS DENIED</p><h1>ไม่มีสิทธิ์เข้าถึงผลิตภัณฑ์และบริการ</h1><p>บัญชีแพทย์สามารถค้นหารายการ Add-on ได้จากหน้าการรักษาของนัดหมายที่รับผิดชอบเท่านั้น</p><Link className="primary-button" href="/queue">กลับไปหน้าคิวและการรักษา</Link></section></div></section></main>;
 
   async function createItem(e:FormEvent){
     e.preventDefault();
