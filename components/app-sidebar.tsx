@@ -1,8 +1,13 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import { apiRequest } from "@/lib/api";
+import { ClinicSessionProfile, hasOwnerRole } from "@/lib/clinic-session";
+import { clearOwnerSession } from "@/lib/owner-session";
+
 type SidebarProps = {
-  active: "dashboard" | "patients" | "queue" | "scheduling" | "treatments" | "catalog" | "inventory" | "sales" | "payments" | "resources" | "settings" | "users";
-  profile?: { name: string; clinicCode: string } | null;
+  active: "dashboard" | "patients" | "queue" | "scheduling" | "treatments" | "catalog" | "inventory" | "sales" | "payments" | "resources" | "settings" | "users" | "organization";
+  profile?: ClinicSessionProfile | null;
 };
 
 const groups = [
@@ -33,12 +38,55 @@ const groups = [
       { id: "settings", href: "/settings", icon: "⚙", label: "ข้อมูลพื้นฐานและตั้งค่า" },
     ],
   },
+  {
+    label: "สำหรับเจ้าของ",
+    ownerOnly: true,
+    items: [
+      { id: "organization", href: "/organization", icon: "⌘", label: "องค์กรและสาขา" },
+    ],
+  },
 ] as const;
 
 export default function AppSidebar({ active, profile }: SidebarProps) {
+  const [ownerResolved, setOwnerResolved] = useState(false);
+
+  useEffect(() => {
+    if (profile?.roles) {
+      return;
+    }
+
+    const token = window.localStorage.getItem("klinic-test-token");
+    if (!token) {
+      return;
+    }
+
+    let cancelled = false;
+    apiRequest<{ roles: string[]; permissions: string[] }>("/auth/me/permissions", { token })
+      .then((result) => {
+        if (cancelled) return;
+        setOwnerResolved(result.data.roles.includes("OWNER"));
+        const saved = window.localStorage.getItem("klinic-test-profile");
+        if (!saved) return;
+        const current = JSON.parse(saved) as ClinicSessionProfile;
+        window.localStorage.setItem(
+          "klinic-test-profile",
+          JSON.stringify({ ...current, roles: result.data.roles }),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setOwnerResolved(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [profile]);
+
+  const ownerVisible = profile?.roles ? hasOwnerRole(profile) : ownerResolved;
+  const visibleGroups = groups.filter((group) => !("ownerOnly" in group) || !group.ownerOnly || ownerVisible);
+
   function logout() {
     window.localStorage.removeItem("klinic-test-token");
     window.localStorage.removeItem("klinic-test-profile");
+    clearOwnerSession();
     window.location.replace("/login");
   }
 
@@ -51,7 +99,7 @@ export default function AppSidebar({ active, profile }: SidebarProps) {
         </a>
 
         <nav className="sidebar-menu" aria-label="เมนูหลัก">
-          {groups.map(group => (
+          {visibleGroups.map(group => (
             <section className="sidebar-group" key={group.label}>
               <p>{group.label}</p>
               {group.items.map(item => (
@@ -82,7 +130,7 @@ export default function AppSidebar({ active, profile }: SidebarProps) {
         </div>
       </aside>
       <nav className="mobile-app-nav" aria-label="เมนูหลักบนมือถือ">
-        {groups.map((group) => group.items.map((item) => (
+        {visibleGroups.map((group) => group.items.map((item) => (
           <a key={`mobile-${item.href}`} href={item.href} className={active === item.id ? "active" : ""}>
             <span aria-hidden="true">{item.icon}</span><b>{item.label.replace(" / Check-in", "")}</b>
           </a>

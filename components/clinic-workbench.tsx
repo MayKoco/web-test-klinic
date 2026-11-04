@@ -3,6 +3,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import { ClinicLoginResult, ClinicSessionProfile } from "@/lib/clinic-session";
+import { clearOwnerSession, OwnerSession, storeOwnerSession } from "@/lib/owner-session";
 
 type Room = { id: string; roomCode: string; name: string; type?: string; status: string };
 type Doctor = { id: string; doctorCode: string; memberNo: string; prefix?: string; firstName: string; lastName: string; specialty?: string; status: string };
@@ -38,6 +40,24 @@ type ClinicBranchDirectory = {
 const LOCAL_SUBDOMAIN_CREDENTIALS: Record<string, { email: string; password: string }> = {
   "kkdev-b58862": { email: "test@gmail.com", password: "test1234" },
 };
+
+async function syncGlobalOwnerSession(
+  credentials: { email: string; password: string },
+  roles: string[],
+) {
+  clearOwnerSession();
+  if (!roles.includes("OWNER")) return;
+  try {
+    const owner = await apiRequest<OwnerSession>("/owner/auth/login", {
+      method: "POST",
+      body: JSON.stringify(credentials),
+    });
+    storeOwnerSession(owner.data);
+  } catch {
+    // A branch-local OWNER is not a Global Owner. Clinic login still succeeds,
+    // but Organization management remains unavailable.
+  }
+}
 
 function buildHourSlots(openHour: number, closeHour: number) {
   return Array.from(
@@ -88,7 +108,7 @@ export default function ClinicWorkbench({
   const clinicSubdomain = initialClinicSubdomain;
   const sessionRestoreStarted = useRef(false);
   const [token, setToken] = useState("");
-  const [profile, setProfile] = useState<{ name: string; clinicCode: string } | null>(null);
+  const [profile, setProfile] = useState<ClinicSessionProfile | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -203,7 +223,7 @@ export default function ClinicWorkbench({
       try {
         const handoff = JSON.parse(handoffValue) as {
           accessToken?: string;
-          profile?: { name?: string; clinicCode?: string };
+          profile?: { name?: string; clinicCode?: string; roles?: string[] };
         };
         if (
           handoff.accessToken &&
@@ -213,6 +233,7 @@ export default function ClinicWorkbench({
           const nextProfile = {
             name: handoff.profile.name,
             clinicCode: handoff.profile.clinicCode,
+            roles: handoff.profile.roles,
           };
           window.localStorage.setItem("klinic-test-token", handoff.accessToken);
           window.localStorage.setItem(
@@ -243,14 +264,19 @@ export default function ClinicWorkbench({
         : undefined;
       if (localCredentials) {
         const loginPath = `/auth/clinics/${encodeURIComponent(clinicSubdomain!)}/login`;
-        apiRequest<{ accessToken: string; user: { email: string } }>(loginPath, {
+        apiRequest<ClinicLoginResult>(loginPath, {
           method: "POST",
           body: JSON.stringify(localCredentials),
         })
           .then((result) => {
-            const nextProfile = { name: result.data.user.email, clinicCode: clinicSubdomain! };
+            const nextProfile = {
+              name: result.data.user.email,
+              clinicCode: clinicSubdomain!,
+              roles: result.data.user.roles,
+            };
             window.localStorage.setItem("klinic-test-token", result.data.accessToken);
             window.localStorage.setItem("klinic-test-profile", JSON.stringify(nextProfile));
+            void syncGlobalOwnerSession(localCredentials, result.data.user.roles);
             setToken(result.data.accessToken);
             setProfile(nextProfile);
             void refresh(result.data.accessToken);
@@ -273,6 +299,7 @@ export default function ClinicWorkbench({
       .catch(() => {
         window.localStorage.removeItem("klinic-test-token");
         window.localStorage.removeItem("klinic-test-profile");
+        clearOwnerSession();
         loginWithLocalCredentials();
       });
   // Session restore runs once; refresh receives the saved token explicitly.
@@ -408,8 +435,8 @@ export default function ClinicWorkbench({
     const form = new FormData(event.currentTarget);
     const clinicIdentifier = String(form.get("clinicCode") ?? "").trim();
     const credentials = {
-      email: form.get("email"),
-      password: form.get("password"),
+      email: String(form.get("email") ?? ""),
+      password: String(form.get("password") ?? ""),
     };
     const selectedClinicId = String(form.get("clinicId") ?? "");
     setBusy("login");
@@ -420,7 +447,7 @@ export default function ClinicWorkbench({
         : "/auth/login";
       let result;
       try {
-        result = await apiRequest<{ accessToken: string; user: { email: string } }>(loginPath, {
+        result = await apiRequest<ClinicLoginResult>(loginPath, {
           method: "POST",
           body: JSON.stringify({
             ...(clinicSubdomain
@@ -435,7 +462,7 @@ export default function ClinicWorkbench({
           throw error;
         }
         loginPath = `/auth/clinics/${encodeURIComponent(clinicIdentifier.toLowerCase())}/login`;
-        result = await apiRequest<{ accessToken: string; user: { email: string } }>(loginPath, {
+        result = await apiRequest<ClinicLoginResult>(loginPath, {
           method: "POST",
           body: JSON.stringify(credentials),
         });
@@ -443,6 +470,7 @@ export default function ClinicWorkbench({
       window.localStorage.setItem("klinic-test-token", result.data.accessToken);
       const prof = {
         name: result.data.user.email,
+        roles: result.data.user.roles,
         clinicCode:
           branchDirectory?.branches.find(
             (branch) => branch.clinicId === selectedClinicId,
@@ -451,6 +479,7 @@ export default function ClinicWorkbench({
           clinicIdentifier,
       };
       window.localStorage.setItem("klinic-test-profile", JSON.stringify(prof));
+      await syncGlobalOwnerSession(credentials, result.data.user.roles);
       setToken(result.data.accessToken);
       setProfile(prof);
       addLog("POST", loginPath, true, result.message);
@@ -474,6 +503,7 @@ export default function ClinicWorkbench({
   function logout() {
     window.localStorage.removeItem("klinic-test-token");
     window.localStorage.removeItem("klinic-test-profile");
+    clearOwnerSession();
     setToken(""); setProfile(null); setRooms([]); setDoctors([]); setPatients([]); setAppointments([]);
   }
 
