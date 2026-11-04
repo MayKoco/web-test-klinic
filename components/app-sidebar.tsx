@@ -6,7 +6,7 @@ import { ClinicSessionProfile, hasOwnerRole } from "@/lib/clinic-session";
 import { clearOwnerSession } from "@/lib/owner-session";
 
 type SidebarProps = {
-  active: "dashboard" | "patients" | "queue" | "scheduling" | "treatments" | "catalog" | "inventory" | "sales" | "payments" | "resources" | "settings" | "users" | "organization";
+  active: "dashboard" | "patients" | "queue" | "scheduling" | "treatments" | "catalog" | "promotions" | "inventory" | "sales" | "payments" | "resources" | "settings" | "users" | "organization";
   profile?: ClinicSessionProfile | null;
 };
 
@@ -34,6 +34,7 @@ const groups: Array<{ label: string; ownerOnly?: boolean; items: MenuItem[] }> =
     label: "สินค้าและการเงิน",
     items: [
       { id: "catalog", href: "/catalog", icon: "◇", label: "ผลิตภัณฑ์และบริการ", anyPermission: ["CATALOG_VIEW"] },
+      { id: "promotions", href: "/catalog?tab=BUNDLES", icon: "%", label: "แพ็กเกจและโปรโมชัน", anyPermission: ["CATALOG_VIEW"] },
       { id: "inventory", href: "/inventory", icon: "▤", label: "คลังสินค้า / Lot", anyPermission: ["CATALOG_VIEW"] },
       { id: "sales", href: "/sales", icon: "฿", label: "การขาย", anyPermission: ["SALE_VIEW"] },
       { id: "payments", href: "/payments", icon: "▭", label: "การชำระเงิน", anyPermission: ["PAYMENT_VIEW"] },

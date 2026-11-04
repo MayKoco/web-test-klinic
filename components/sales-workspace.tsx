@@ -5,23 +5,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
 
-type Category = "ALL" | "PRODUCT" | "SERVICE" | "COURSE" | "PACKAGE" | "PROMOTION";
-type ItemType = "CATALOG" | "PROMOTION";
+type Category = "ALL" | "PRODUCT" | "SERVICE" | "COURSE" | "PACKAGE";
+type ItemType = "CATALOG";
 type CatalogItem = {
   id: string; code: string; name: string; description?: string; type: Exclude<Category,"ALL"|"PROMOTION">;
-  basePrice: string; finalPrice: string; discountType:"NONE"|"PERCENT"|"AMOUNT"; discountValue:string; discountAmount:string; status: string; productDetail?: { unit: string; currentStock: number };
-  serviceDetail?: { durationMinutes: number }; courseDetail?: { sessionCount: number };
+  basePrice: string; finalPrice: string; discountType:"NONE"|"PERCENT"|"AMOUNT"; discountValue:string; discountAmount:string;
+  unit?: string|null; productClass?: string|null;
+  promotion?: { id:string; code:string; name:string; version:number }|null;
 };
-type Promotion = { id:string; code:string; name:string; basePrice:string; finalPrice:string; discountType:"NONE"|"PERCENT"|"AMOUNT"; discountValue:string; discountAmount:string; status:string; components:{id:string}[] };
 type Patient = { id:string; hn:string; firstName:string; lastName:string; phone?:string; nickname?:string };
-type CartLine = { key:string; itemType:ItemType; itemId:string; category:Category; code:string; name:string; basePrice:number; price:number; discountType:"NONE"|"PERCENT"|"AMOUNT"; discountValue:number; discountAmount:number; quantity:number; detail?:string; stock?:number };
+type CartLine = { key:string; itemType:ItemType; itemId:string; category:Category; code:string; name:string; basePrice:number; price:number; discountType:"NONE"|"PERCENT"|"AMOUNT"; discountValue:number; discountAmount:number; quantity:number; detail?:string; promotion?:CatalogItem["promotion"] };
 type Preview = {
   patientRequired:boolean;
-  lines:{ itemType:ItemType; itemId:string; code:string; name:string; quantity:number; unitBasePrice:string; baseAmount:string; discountAmount:string; netAmount:string }[];
+  lines:{ itemType:ItemType; itemId:string; code:string; name:string; quantity:number; unitBasePrice:string; baseAmount:string; discountType:"NONE"|"PERCENT"|"AMOUNT";discountValue:string;discountAmount:string; netAmount:string;promotion?:{id:string;code:string;name:string;version:number}|null }[];
   totals:{ subtotal:string; discountAmount:string; taxAmount:string; netAmount:string };
   warnings:string[];
 };
-type Sale = { id:string; saleNo:string; status:string; netAmount:string; balanceAmount:string };
+type Sale = { id:string; saleNo:string; status:string; subtotal:string;discountAmount:string;taxAmount:string;netAmount:string;paidAmount:string;balanceAmount:string;lines?:{id:string;itemNameSnapshot:string;quantity:number;baseAmount:string;discountAmount:string;netAmount:string;promotionCodeSnapshot?:string|null;promotionNameSnapshot?:string|null}[] };
 type PaymentResult = { sale:Sale; issuedEntitlements:{id:string; entitlementType:string; totalUnits:number; remainingUnits:number}[] };
 type Commerce = {
   summary:{ totalPaid:string; netCollected:string; outstandingAmount:string; saleCount:number; activeEntitlementCount:number; remainingServiceUnits:number; remainingCourseUnits:number };
@@ -32,7 +32,7 @@ type Commerce = {
 
 const categoryMeta:Record<Category,{label:string;icon:string}> = {
   ALL:{label:"ทั้งหมด",icon:"✦"}, PRODUCT:{label:"สินค้า",icon:"◇"}, SERVICE:{label:"บริการ",icon:"✚"},
-  COURSE:{label:"คอร์ส",icon:"◎"}, PACKAGE:{label:"แพ็กเกจ",icon:"▦"}, PROMOTION:{label:"โปรโมชัน",icon:"%"},
+  COURSE:{label:"คอร์ส",icon:"◎"}, PACKAGE:{label:"แพ็กเกจ",icon:"▦"},
 };
 const money=(value:string|number|undefined)=>new Intl.NumberFormat("th-TH",{style:"currency",currency:"THB",minimumFractionDigits:0,maximumFractionDigits:2}).format(Number(value??0));
 const errorText=(error:unknown)=>{const e=error as ApiClientError;return e.code?`${e.code}: ${e.message}`:(e.message||"เกิดข้อผิดพลาด");};
@@ -41,7 +41,6 @@ export default function SalesWorkspace(){
   const [token,setToken]=useState("");
   const [profile,setProfile]=useState<{name:string;clinicCode:string}|null>(null);
   const [items,setItems]=useState<CatalogItem[]>([]);
-  const [promotions,setPromotions]=useState<Promotion[]>([]);
   const [patients,setPatients]=useState<Patient[]>([]);
   const [patientId,setPatientId]=useState("");
   const [patientQuery,setPatientQuery]=useState("");
@@ -61,12 +60,11 @@ export default function SalesWorkspace(){
   const load=useCallback(async(activeToken:string)=>{
     setLoading(true); setNotice(null);
     try{
-      const [catalogResponse,promotionResponse,patientResponse]=await Promise.all([
-        apiRequest<CatalogItem[]>("/catalog/items?status=ACTIVE&limit=100&sortBy=name&sortOrder=asc",{token:activeToken}),
-        apiRequest<Promotion[]>("/promotions?status=ACTIVE&limit=100&sortBy=name&sortOrder=asc",{token:activeToken}),
+      const [catalogResponse,patientResponse]=await Promise.all([
+        apiRequest<CatalogItem[]>("/sales/checkout-items?limit=100&sortBy=name&sortOrder=asc",{token:activeToken}),
         apiRequest<Patient[]>("/patients?limit=100&sortBy=firstName&sortOrder=asc",{token:activeToken}),
       ]);
-      setItems(catalogResponse.data); setPromotions(promotionResponse.data.filter(p=>p.status==="ACTIVE")); setPatients(patientResponse.data);
+      setItems(catalogResponse.data); setPatients(patientResponse.data);
     }catch(error){setNotice({kind:"error",text:errorText(error)});}finally{setLoading(false);}
   },[]);
 
@@ -105,10 +103,8 @@ export default function SalesWorkspace(){
   const selectedPatient=patients.find(patient=>patient.id===patientId);
   const patientChoices=useMemo(()=>patients.filter(patient=>`${patient.hn} ${patient.firstName} ${patient.lastName} ${patient.phone??""}`.toLowerCase().includes(patientQuery.trim().toLowerCase())).slice(0,8),[patients,patientQuery]);
   const sellable=useMemo(()=>{
-    const catalog:CartLine[]=items.map(item=>({key:`CATALOG:${item.id}`,itemType:"CATALOG",itemId:item.id,category:item.type,code:item.code,name:item.name,basePrice:Number(item.basePrice),price:Number(item.finalPrice),discountType:item.discountType,discountValue:Number(item.discountValue),discountAmount:Number(item.discountAmount),quantity:0,stock:item.productDetail?.currentStock,detail:item.type==="PRODUCT"?`${item.productDetail?.unit??"ชิ้น"} · คงเหลือ ${item.productDetail?.currentStock??0}`:item.type==="SERVICE"?`${item.serviceDetail?.durationMinutes??0} นาที`:item.type==="COURSE"?`${item.courseDetail?.sessionCount??0} ครั้ง`:undefined}));
-    const promo:CartLine[]=promotions.map(item=>({key:`PROMOTION:${item.id}`,itemType:"PROMOTION",itemId:item.id,category:"PROMOTION",code:item.code,name:item.name,basePrice:Number(item.basePrice),price:Number(item.finalPrice),discountType:item.discountType,discountValue:Number(item.discountValue),discountAmount:Number(item.discountAmount),quantity:0,detail:`รวม ${item.components.length} รายการ`}));
-    return [...catalog,...promo].filter(item=>(category==="ALL"||item.category===category)&&`${item.code} ${item.name}`.toLowerCase().includes(query.trim().toLowerCase()));
-  },[items,promotions,category,query]);
+    return items.map< CartLine >(item=>({key:`CATALOG:${item.id}`,itemType:"CATALOG",itemId:item.id,category:item.type,code:item.code,name:item.name,basePrice:Number(item.basePrice),price:Number(item.finalPrice),discountType:item.discountType,discountValue:Number(item.discountValue),discountAmount:Number(item.discountAmount),quantity:0,promotion:item.promotion,detail:item.promotion?`โปร ${item.promotion.code} · ${item.promotion.name}`:item.type==="PRODUCT"?(item.unit??"ชิ้น"):"พร้อมขาย"})).filter(item=>(category==="ALL"||item.category===category)&&`${item.code} ${item.name}`.toLowerCase().includes(query.trim().toLowerCase()));
+  },[items,category,query]);
 
   function add(item:CartLine){
     setCart(current=>current.some(line=>line.key===item.key)?current.map(line=>line.key===item.key?{...line,quantity:line.quantity+1}:line):[...current,{...item,quantity:1}]);
@@ -167,7 +163,7 @@ export default function SalesWorkspace(){
               const inCart=cart.find(line=>line.key===item.key)?.quantity??0;
               const discounted=item.discountAmount>0||item.price<item.basePrice;
               const discountLabel=item.discountType==="PERCENT"?`ลด ${item.discountValue}%`:`ลด ${money(item.discountAmount||item.discountValue)}`;
-              return <article key={item.key} className={inCart?"selected":""} role="button" tabIndex={0} aria-label={`เพิ่ม ${item.name} ลงรายการสั่งซื้อ`} onClick={()=>add(item)} onKeyDown={event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();add(item);}}}><span className={`sales-product-icon ${item.category.toLowerCase()}`}>{categoryMeta[item.category].icon}</span><div><small>{item.code} · {categoryMeta[item.category].label}</small><h3>{item.name}</h3><p>{item.detail||"พร้อมขาย"}{item.stock!==undefined&&item.stock<=0&&<em> · สต็อกติดลบได้</em>}</p></div><div className="sales-list-price">{discounted&&<><span>{discountLabel}</span><del>{money(item.basePrice)}</del></>}<strong>{money(item.price)}</strong></div><button onClick={event=>{event.stopPropagation();add(item);}}>{inCart?`เพิ่มอีก · ${inCart}`:"+ เพิ่ม"}</button></article>;
+              return <article key={item.key} className={inCart?"selected":""} role="button" tabIndex={0} aria-label={`เพิ่ม ${item.name} ลงรายการสั่งซื้อ`} onClick={()=>add(item)} onKeyDown={event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();add(item);}}}><span className={`sales-product-icon ${item.category.toLowerCase()}`}>{categoryMeta[item.category].icon}</span><div><small>{item.code} · {categoryMeta[item.category].label}</small><h3>{item.name}</h3><p>{item.detail||"พร้อมขาย"}</p></div><div className="sales-list-price">{discounted&&<><span>{discountLabel}</span><del>{money(item.basePrice)}</del></>}<strong>{money(item.price)}</strong></div><button onClick={event=>{event.stopPropagation();add(item);}}>{inCart?`เพิ่มอีก · ${inCart}`:"+ เพิ่ม"}</button></article>;
             })}</div>}
           </div>
 
@@ -175,7 +171,7 @@ export default function SalesWorkspace(){
             <div className="sales-section-heading"><div><p className="eyebrow">ORDER</p><h2>รายการสั่งซื้อ</h2></div><span className="cart-count">{cart.reduce((sum,line)=>sum+line.quantity,0)} รายการ</span></div>
             {!cart.length?<div className="cart-empty"><span>＋</span><b>ยังไม่มีรายการ</b><p>เลือกรายการจากด้านซ้ายเพื่อเริ่มสร้างใบขาย</p></div>:<div className="cart-lines">{cart.map(line=>{
               const calculated=preview?.lines.find(item=>item.itemType===line.itemType&&item.itemId===line.itemId);
-              return <article key={line.key}><div className="cart-line-title"><span className={line.category.toLowerCase()}>{categoryMeta[line.category].label}</span><button onClick={()=>changeQuantity(line.key,0)}>×</button></div><h3>{line.name}</h3><div className="cart-line-bottom"><div className="quantity-control"><button onClick={()=>changeQuantity(line.key,line.quantity-1)}>−</button><b>{line.quantity}</b><button onClick={()=>changeQuantity(line.key,line.quantity+1)}>＋</button></div><strong>{money(calculated?.netAmount??line.price*line.quantity)}</strong></div></article>;
+              return <article key={line.key}><div className="cart-line-title"><span className={line.category.toLowerCase()}>{categoryMeta[line.category].label}</span><button onClick={()=>changeQuantity(line.key,0)}>×</button></div><h3>{line.name}</h3>{calculated?.promotion&&<p className="cart-promotion"><b>{calculated.promotion.code}</b><span>{calculated.promotion.name} · ลด {money(calculated.discountAmount)}</span></p>}<div className="cart-line-bottom"><div className="quantity-control"><button onClick={()=>changeQuantity(line.key,line.quantity-1)}>−</button><b>{line.quantity}</b><button onClick={()=>changeQuantity(line.key,line.quantity+1)}>＋</button></div><strong>{money(calculated?.netAmount??line.price*line.quantity)}</strong></div></article>;
             })}</div>}
             <label className="sale-note">บันทึกในใบขาย<textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="เช่น ลูกค้าขอใบเสร็จฉบับเต็ม"/></label>
             {preview?.patientRequired&&!patientId&&<div className="patient-required">เลือกผู้รับบริการก่อนยืนยัน เพื่อออกสิทธิ์บริการหรือคอร์สให้ถูกคน</div>}
