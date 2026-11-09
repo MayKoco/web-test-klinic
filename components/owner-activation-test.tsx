@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import Link from "next/link";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import { createClientId } from "@/lib/client-id";
 
 type Mode = "CREATE" | "EXISTING";
 type Phase =
@@ -67,12 +68,6 @@ function errorMessage(error: unknown) {
     return `${error.code ? `${error.code}: ` : ""}${error.message}`;
   }
   return error instanceof Error ? error.message : "ทดสอบ activation ไม่สำเร็จ";
-}
-
-function idempotencyKey() {
-  return typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `activation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export default function OwnerActivationTest() {
@@ -155,7 +150,7 @@ export default function OwnerActivationTest() {
           {
             method: "POST",
             token: platform.data.accessToken,
-            headers: { "Idempotency-Key": idempotencyKey() },
+            headers: { "Idempotency-Key": createClientId() },
             body: JSON.stringify({
               clinicName: form.clinicName.trim(),
               clinicCode: normalizedCode,

@@ -5,6 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import { createClientId } from "@/lib/client-id";
 
 type BoardAction = "CHECK_IN" | "START" | "FINISH" | "COMPLETE" | "CANCEL";
 type SettlementMode = "PAYMENT" | "ENTITLEMENT" | "NO_CHARGE";
@@ -613,7 +614,7 @@ export default function QueueBoard() {
     try {
       const result = await apiRequest<{ receipt: ReceiptData | null }>(`/sales/${payment.saleId}/payments`, {
         method: "POST", token,
-        headers: { "Idempotency-Key": crypto.randomUUID() },
+        headers: { "Idempotency-Key": createClientId() },
         body: JSON.stringify({ amount: Number(payment.amount), method: payment.method, paidAt: new Date().toISOString() }),
       });
       setPayment(null);
@@ -862,7 +863,7 @@ function UrgentWalkInDialog({ token, doctors, close, completed }: {
       const response = await apiRequest<{ date: string }>("/appointments/urgent-walk-ins", {
         method: "POST",
         token,
-        headers: { "Idempotency-Key": crypto.randomUUID() },
+        headers: { "Idempotency-Key": createClientId() },
         body: JSON.stringify({
           patientId,
           doctorId,
@@ -1270,7 +1271,7 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
     const entries = selected.map(file => ({
       file,
       upload: {
-        localId: crypto.randomUUID(),
+        localId: createClientId(),
         previewUrl: URL.createObjectURL(file),
         originalName: file.name,
         type,

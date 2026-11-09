@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import { createClientId } from "@/lib/client-id";
 
 type Category = "ALL" | "PRODUCT" | "SERVICE" | "COURSE" | "PACKAGE";
 type ItemType = "CATALOG";
@@ -128,7 +129,7 @@ export default function SalesWorkspace(){
     setSaving(true); setNotice(null);
     try{
       const result=await apiRequest<PaymentResult>(`/sales/${payment.sale.id}/payments`,{
-        method:"POST",token,headers:{"Idempotency-Key":crypto.randomUUID()},
+        method:"POST",token,headers:{"Idempotency-Key":createClientId()},
         body:JSON.stringify({amount:Number(payment.amount),method:payment.method,reference:payment.reference.trim()||undefined,paidAt:new Date().toISOString()}),
       });
       setReceipt({sale:result.data.sale,entitlements:result.data.issuedEntitlements.length});

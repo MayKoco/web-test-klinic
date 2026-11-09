@@ -1,9 +1,16 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import Link from "next/link";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import { createClientId } from "@/lib/client-id";
 
 type CType = "PRODUCT" | "SERVICE" | "COURSE" | "PACKAGE";
 type DType = "NONE" | "PERCENT" | "AMOUNT";
@@ -17,6 +24,7 @@ type TaxBreakdown = {
 };
 type Item = {
   id: string;
+  version?: number;
   code: string;
   name: string;
   description?: string;
@@ -69,7 +77,33 @@ type Item = {
     id: string;
     itemId: string;
     quantity: number;
+    unitBasePriceSnapshot?: string;
+    lineBasePriceSnapshot?: string;
+    currentUnitPrice?: string;
+    priceChanged?: boolean;
     item: Item;
+  }[];
+};
+type PackageDetail = Item & {
+  version: number;
+  sellingPrice: string;
+  componentTotal: string;
+  savingAmount: string;
+  savingPercent: string;
+};
+type PackagePricePreview = {
+  componentTotal: string;
+  sellingPrice: string;
+  savingAmount: string;
+  savingPercent: string;
+  components: {
+    itemId: string;
+    type: CType;
+    code: string;
+    name: string;
+    quantity: number;
+    unitBasePrice: string;
+    lineBasePrice: string;
   }[];
 };
 type ServiceProduct = {
@@ -204,8 +238,9 @@ type Draft = {
 type BundleDraft = {
   code: string;
   name: string;
-  discountType: DType;
-  discountValue: string;
+  description: string;
+  sellingPrice: string;
+  activateNow: boolean;
   components: Record<string, number>;
 };
 type PromotionDraft = {
@@ -328,10 +363,14 @@ export default function CatalogWorkspace() {
   const [pack, setPack] = useState<BundleDraft>({
     code: "",
     name: "",
-    discountType: "NONE",
-    discountValue: "0",
+    description: "",
+    sellingPrice: "",
+    activateNow: true,
     components: {},
   });
+  const [editingPackageId, setEditingPackageId] = useState<string | null>(null);
+  const [packagePreview, setPackagePreview] =
+    useState<PackagePricePreview | null>(null);
   const [promo, setPromo] = useState<PromotionDraft>({
     code: "",
     name: "",
@@ -829,35 +868,205 @@ export default function CatalogWorkspace() {
   async function createPackage(e: FormEvent) {
     e.preventDefault();
     const list = components(pack.components);
-    if (!list.length) {
-      setNotice({ kind: "error", text: "เลือกองค์ประกอบอย่างน้อย 1 รายการ" });
+    if (list.length < 2) {
+      setNotice({ kind: "error", text: "เลือกองค์ประกอบอย่างน้อย 2 รายการ" });
+      return;
+    }
+    if (Number(pack.sellingPrice) <= 0) {
+      setNotice({ kind: "error", text: "กรอกราคาขายแพ็กเกจให้มากกว่า 0" });
       return;
     }
     const body = {
       code: pack.code,
       name: pack.name,
-      discountType: pack.discountType,
-      discountValue:
-        pack.discountType === "NONE" ? 0 : Number(pack.discountValue),
+      description: pack.description || undefined,
+      sellingPrice: Number(pack.sellingPrice),
       components: list,
     };
     const ok = await action(
-      () =>
-        apiRequest("/catalog/packages", {
+      async () => {
+        if (editingPackageId) {
+          const current = await apiRequest<PackageDetail>(
+            `/catalog/packages/${editingPackageId}`,
+            { token },
+          );
+          const updated = await apiRequest<PackageDetail>(
+            `/catalog/packages/${editingPackageId}`,
+            {
+              method: "PATCH",
+              token,
+              body: JSON.stringify({
+                name: pack.name,
+                description: pack.description || undefined,
+                sellingPrice: Number(pack.sellingPrice),
+                expectedVersion: current.data.version,
+              }),
+            },
+          );
+          await apiRequest<PackageDetail>(
+            `/catalog/packages/${editingPackageId}/components`,
+            {
+              method: "PUT",
+              token,
+              body: JSON.stringify({
+                expectedVersion: updated.data.version,
+                components: list,
+              }),
+            },
+          );
+          return;
+        }
+        const created = await apiRequest<Item>("/catalog/packages", {
           method: "POST",
           token,
           body: JSON.stringify(body),
-        }),
-      "สร้างแพ็กเกจเรียบร้อย",
+        });
+        if (pack.activateNow)
+          await apiRequest(`/catalog/items/${created.data.id}`, {
+            method: "PATCH",
+            token,
+            body: JSON.stringify({ status: "ACTIVE" }),
+          });
+      },
+      editingPackageId
+        ? "อัปเดตแพ็กเกจเรียบร้อย"
+        : pack.activateNow
+          ? "สร้างและเปิดใช้งานแพ็กเกจเรียบร้อย"
+          : "สร้างแพ็กเกจแบบร่างเรียบร้อย",
     );
-    if (ok)
+    if (ok) {
       setPack({
         code: "",
         name: "",
-        discountType: "NONE",
-        discountValue: "0",
+        description: "",
+        sellingPrice: "",
+        activateNow: true,
         components: {},
       });
+      setEditingPackageId(null);
+      setPackagePreview(null);
+    }
+  }
+  async function previewPackage() {
+    const list = components(pack.components);
+    if (list.length < 2) {
+      setNotice({
+        kind: "error",
+        text: `เลือกองค์ประกอบอย่างน้อย 2 รายการ (เลือกแล้ว ${list.length} รายการ)`,
+      });
+      return;
+    }
+    if (!Number.isFinite(Number(pack.sellingPrice)) || Number(pack.sellingPrice) <= 0) {
+      setNotice({
+        kind: "error",
+        text: "เลือกครบแล้ว กรุณากรอกราคาขายแพ็กเกจให้มากกว่า 0 ก่อน Preview",
+      });
+      requestAnimationFrame(() => {
+        const priceInput = document.getElementById(
+          "package-selling-price",
+        ) as HTMLInputElement | null;
+        priceInput?.focus();
+        priceInput?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      });
+      return;
+    }
+    await action(async () => {
+      const response = await apiRequest<PackagePricePreview>(
+        "/catalog/packages/price-preview",
+        {
+          method: "POST",
+          token,
+          body: JSON.stringify({
+            sellingPrice: Number(pack.sellingPrice),
+            components: list,
+          }),
+        },
+      );
+      setPackagePreview(response.data);
+    }, "คำนวณราคาแพ็กเกจแล้ว", false);
+  }
+  async function editPackage(item: Item) {
+    await action(async () => {
+      const response = await apiRequest<PackageDetail>(
+        `/catalog/packages/${item.id}`,
+        { token },
+      );
+      const detail = response.data;
+      setPack({
+        code: detail.code,
+        name: detail.name,
+        description: detail.description ?? "",
+        sellingPrice: detail.sellingPrice,
+        activateNow: detail.status === "ACTIVE",
+        components: Object.fromEntries(
+          (detail.packageComponents ?? []).map((component) => [
+            component.itemId,
+            component.quantity,
+          ]),
+        ),
+      });
+      setEditingPackageId(detail.id);
+      setPackagePreview({
+        componentTotal: detail.componentTotal,
+        sellingPrice: detail.sellingPrice,
+        savingAmount: detail.savingAmount,
+        savingPercent: detail.savingPercent,
+        components: (detail.packageComponents ?? []).map((component) => ({
+          itemId: component.itemId,
+          type: component.item.type,
+          code: component.item.code,
+          name: component.item.name,
+          quantity: component.quantity,
+          unitBasePrice:
+            component.unitBasePriceSnapshot ?? component.item.basePrice,
+          lineBasePrice:
+            component.lineBasePriceSnapshot ?? component.item.basePrice,
+        })),
+      });
+    }, `โหลด ${item.name} สำหรับแก้ไขแล้ว`, false);
+  }
+  function cancelPackageEdit() {
+    setEditingPackageId(null);
+    setPackagePreview(null);
+    setPack({
+      code: "",
+      name: "",
+      description: "",
+      sellingPrice: "",
+      activateNow: true,
+      components: {},
+    });
+  }
+  async function refreshPackagePrices(item: Item) {
+    await action(async () => {
+      const current = await apiRequest<PackageDetail>(
+        `/catalog/packages/${item.id}`,
+        { token },
+      );
+      await apiRequest(
+        `/catalog/packages/${item.id}/refresh-component-prices`,
+        {
+          method: "POST",
+          token,
+          body: JSON.stringify({ expectedVersion: current.data.version }),
+        },
+      );
+    }, `อัปเดตราคาอ้างอิงของ ${item.name} แล้ว`);
+  }
+  async function setPackageStatus(item: Item) {
+    const next = item.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    await action(
+      () =>
+        apiRequest(`/catalog/items/${item.id}`, {
+          method: "PATCH",
+          token,
+          body: JSON.stringify({ status: next }),
+        }),
+      `${item.name}: ${next}`,
+    );
   }
   async function createPromotion(e: FormEvent) {
     e.preventDefault();
@@ -941,7 +1150,7 @@ export default function CatalogWorkspace() {
         apiRequest(`/sales/${payment.saleId}/payments`, {
           method: "POST",
           token,
-          headers: { "Idempotency-Key": crypto.randomUUID() },
+          headers: { "Idempotency-Key": createClientId() },
           body: JSON.stringify({
             amount: Number(payment.amount),
             method: payment.method,
@@ -1468,11 +1677,18 @@ export default function CatalogWorkspace() {
               promos={promos}
               pack={pack}
               promo={promo}
+              packagePreview={packagePreview}
+              editingPackageId={editingPackageId}
               saving={saving}
               setPack={setPack}
               setPromo={setPromo}
               setComp={setComp}
               createPackage={createPackage}
+              previewPackage={previewPackage}
+              editPackage={(item) => void editPackage(item)}
+              cancelPackageEdit={cancelPackageEdit}
+              refreshPackagePrices={(item) => void refreshPackagePrices(item)}
+              setPackageStatus={(item) => void setPackageStatus(item)}
               createPromotion={createPromotion}
               promoAction={(p, x) =>
                 void action(
@@ -1521,11 +1737,18 @@ function BundleView(p: {
   promos: Promo[];
   pack: BundleDraft;
   promo: PromotionDraft;
+  packagePreview: PackagePricePreview | null;
+  editingPackageId: string | null;
   saving: boolean;
   setPack: React.Dispatch<React.SetStateAction<BundleDraft>>;
   setPromo: React.Dispatch<React.SetStateAction<PromotionDraft>>;
   setComp: (id: string, q: number) => void;
   createPackage: (e: FormEvent) => void;
+  previewPackage: () => void;
+  editPackage: (item: Item) => void;
+  cancelPackageEdit: () => void;
+  refreshPackagePrices: (item: Item) => void;
+  setPackageStatus: (item: Item) => void;
   createPromotion: (e: FormEvent) => void;
   promoAction: (p: Promo, a: string) => void;
 }) {
@@ -1546,9 +1769,13 @@ function BundleView(p: {
           value={p.pack}
           items={choices}
           saving={p.saving}
+          preview={p.packagePreview}
+          editing={Boolean(p.editingPackageId)}
           setValue={p.setPack}
           setComp={p.setComp}
           submit={p.createPackage}
+          previewPrice={p.previewPackage}
+          cancelEdit={p.cancelPackageEdit}
         />
         <PromotionForm
           value={p.promo}
@@ -1558,6 +1785,13 @@ function BundleView(p: {
           submit={p.createPromotion}
         />
       </section>
+      <PackageList
+        items={p.items.filter((item) => item.type === "PACKAGE")}
+        saving={p.saving}
+        edit={p.editPackage}
+        refresh={p.refreshPackagePrices}
+        toggleStatus={p.setPackageStatus}
+      />
       <section className="panel list-section">
         <Heading icon="%" over="PROMOTION LIFECYCLE" title="โปรโมชันทั้งหมด" />
         {!p.promos.length ? (
@@ -1608,10 +1842,27 @@ function PackageForm(p: {
   value: BundleDraft;
   items: Item[];
   saving: boolean;
+  preview: PackagePricePreview | null;
+  editing: boolean;
   setValue: React.Dispatch<React.SetStateAction<BundleDraft>>;
   setComp: (id: string, q: number) => void;
   submit: (e: FormEvent) => void;
+  previewPrice: () => void;
+  cancelEdit: () => void;
 }) {
+  const selectedComponents = p.items.flatMap((item) => {
+    const quantity = p.value.components[item.id] ?? 0;
+    return quantity > 0
+      ? [{ item, quantity, total: Number(item.basePrice) * quantity }]
+      : [];
+  });
+  const componentTotal = selectedComponents.reduce(
+    (total, component) => total + component.total,
+    0,
+  );
+  const sellingPrice = Number(p.value.sellingPrice) || 0;
+  const priceDifference = componentTotal - sellingPrice;
+
   return (
     <article className="panel">
       <Heading icon="▦" over="PACKAGE" title="สร้างแพ็กเกจ" />
@@ -1621,6 +1872,7 @@ function PackageForm(p: {
             <Field label="รหัส">
               <input
                 value={p.value.code}
+                disabled={p.editing}
                 onChange={(e) =>
                   p.setValue((d) => ({
                     ...d,
@@ -1643,17 +1895,180 @@ function PackageForm(p: {
             </Field>
           }
         />
-        <Discount value={p.value} setValue={p.setValue} />
+        <Field label="รายละเอียด">
+          <textarea
+            value={p.value.description}
+            onChange={(e) =>
+              p.setValue((draft) => ({
+                ...draft,
+                description: e.target.value,
+              }))
+            }
+          />
+        </Field>
         <Picker
           items={p.items}
           values={p.value.components}
           change={p.setComp}
         />
-        <button className="primary-button" disabled={p.saving}>
-          สร้างแพ็กเกจ
-        </button>
+        <section className="package-live-summary" aria-live="polite">
+          <div>
+            <span>องค์ประกอบที่เลือก</span>
+            <b>{selectedComponents.length} รายการ</b>
+          </div>
+          <div>
+            <span>ราคารวมอ้างอิง</span>
+            <b>{money(componentTotal)}</b>
+          </div>
+          <button
+            className="soft-button"
+            type="button"
+            disabled={componentTotal <= 0 || p.saving}
+            onClick={() =>
+              p.setValue((draft) => ({
+                ...draft,
+                sellingPrice: componentTotal.toFixed(2),
+              }))
+            }
+          >
+            ใช้ราคารวม
+          </button>
+        </section>
+        <Field label="ราคาขายแพ็กเกจ">
+          <input
+            id="package-selling-price"
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={p.value.sellingPrice}
+            onChange={(e) => {
+              p.setValue((draft) => ({
+                ...draft,
+                sellingPrice: e.target.value,
+              }));
+            }}
+            required
+          />
+          <small className="package-price-help">
+            {sellingPrice > 0 && componentTotal > 0
+              ? priceDifference >= 0
+                ? `ต่ำกว่าราคารวม ${money(priceDifference)}`
+                : `สูงกว่าราคารวม ${money(Math.abs(priceDifference))}`
+              : "ราคาปกติของแพ็กเกจ ส่วนลดตามช่วงเวลาให้กำหนดใน Promotion"}
+          </small>
+        </Field>
+        {p.preview && <PackagePreviewCard value={p.preview} />}
+        {!p.editing && (
+          <label className="catalog-check package-activate-check">
+            <input
+              type="checkbox"
+              checked={p.value.activateNow}
+              onChange={(e) =>
+                p.setValue((draft) => ({
+                  ...draft,
+                  activateNow: e.target.checked,
+                }))
+              }
+            />
+            <span>เปิดใช้งานทันทีเพื่อให้เลือกใน Promotion และ Checkout ได้</span>
+          </label>
+        )}
+        <div className="package-form-actions">
+          <button
+            className="soft-button"
+            type="button"
+            disabled={p.saving}
+            onClick={p.previewPrice}
+          >
+            Preview ราคา
+          </button>
+          <button className="primary-button" disabled={p.saving}>
+            {p.editing ? "บันทึกแพ็กเกจ" : "สร้างแพ็กเกจ"}
+          </button>
+          {p.editing && (
+            <button
+              className="soft-button"
+              type="button"
+              disabled={p.saving}
+              onClick={p.cancelEdit}
+            >
+              ยกเลิกแก้ไข
+            </button>
+          )}
+        </div>
       </form>
     </article>
+  );
+}
+
+function PackagePreviewCard({ value }: { value: PackagePricePreview }) {
+  return (
+    <section className="package-price-preview" aria-live="polite">
+      <div>
+        <span>รวมราคาอ้างอิง</span>
+        <b>{money(value.componentTotal)}</b>
+      </div>
+      <div>
+        <span>ราคาขายแพ็กเกจ</span>
+        <b>{money(value.sellingPrice)}</b>
+      </div>
+      <div className={Number(value.savingAmount) >= 0 ? "saving" : "markup"}>
+        <span>{Number(value.savingAmount) >= 0 ? "ประหยัด" : "สูงกว่ารวม"}</span>
+        <b>
+          {money(Math.abs(Number(value.savingAmount)))} · {Math.abs(Number(value.savingPercent))}%
+        </b>
+      </div>
+    </section>
+  );
+}
+
+function PackageList(p: {
+  items: Item[];
+  saving: boolean;
+  edit: (item: Item) => void;
+  refresh: (item: Item) => void;
+  toggleStatus: (item: Item) => void;
+}) {
+  return (
+    <section className="panel list-section package-list-section">
+      <Heading icon="▦" over="PACKAGE CATALOG" title="แพ็กเกจทั้งหมด" />
+      {!p.items.length ? (
+        <Empty text="ยังไม่มีแพ็กเกจ" />
+      ) : (
+        <div className="package-list">
+          {p.items.map((item) => (
+            <article key={item.id}>
+              <div className="package-list-title">
+                <span className="catalog-type-icon catalog-amber">▦</span>
+                <div>
+                  <span className="catalog-code">{item.code}</span>
+                  <h4>{item.name}</h4>
+                  <small>{item.description || "ไม่มีรายละเอียด"}</small>
+                </div>
+              </div>
+              <div className="package-list-price">
+                <small>ราคาขายปกติ</small>
+                <b>{money(item.basePrice)}</b>
+              </div>
+              <span className={`status-pill ${item.status.toLowerCase()}`}>
+                {item.status}
+              </span>
+              <div className="row-actions package-row-actions">
+                <button disabled={p.saving} onClick={() => p.edit(item)}>
+                  แก้ไข
+                </button>
+                <button disabled={p.saving} onClick={() => p.refresh(item)}>
+                  Refresh ราคา
+                </button>
+                <button disabled={p.saving} onClick={() => p.toggleStatus(item)}>
+                  {item.status === "ACTIVE" ? "ปิดใช้งาน" : "เปิดใช้งาน"}
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 function PromotionForm(p: {
@@ -2573,46 +2988,6 @@ function PaymentSaleSummary({ sale }: { sale: Sale }) {
         <b>คงเหลือ {money(sale.balanceAmount)}</b>
       </div>
     </section>
-  );
-}
-function Discount<T extends BundleDraft>({
-  value,
-  setValue,
-}: {
-  value: T;
-  setValue: React.Dispatch<React.SetStateAction<T>>;
-}) {
-  return (
-    <Two
-      a={
-        <Field label="ประเภทส่วนลด">
-          <select
-            value={value.discountType}
-            onChange={(e) =>
-              setValue((d) => ({ ...d, discountType: e.target.value as DType }))
-            }
-          >
-            <option value="NONE">ไม่มีส่วนลด</option>
-            <option value="PERCENT">เปอร์เซ็นต์</option>
-            <option value="AMOUNT">จำนวนเงิน</option>
-          </select>
-        </Field>
-      }
-      b={
-        <Field label="ค่าส่วนลด">
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            disabled={value.discountType === "NONE"}
-            value={value.discountValue}
-            onChange={(e) =>
-              setValue((d) => ({ ...d, discountValue: e.target.value }))
-            }
-          />
-        </Field>
-      }
-    />
   );
 }
 function Picker({

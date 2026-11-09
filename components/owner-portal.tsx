@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import { createClientId } from "@/lib/client-id";
 import {
   clearOwnerSession,
   OwnerSession,
@@ -195,7 +196,7 @@ export default function OwnerPortal() {
         {
           method: "POST",
           token: accessToken,
-          headers: { "Idempotency-Key": crypto.randomUUID() },
+          headers: { "Idempotency-Key": createClientId() },
           body: JSON.stringify({
             name: branchDraft.name.trim(),
             code: branchDraft.code.trim(),

@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import { createClientId } from "@/lib/client-id";
 
 type ProductClass = "GENERAL" | "MEDICINE" | "MEDICAL_SUPPLY";
 type Product = {
@@ -86,7 +87,7 @@ type DraftLine = {
 };
 
 const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
-const blankLine = (): DraftLine => ({ key: crypto.randomUUID(), productMode: "EXISTING", productId: "", productSearch: "", lotChoice: "NEW", quantity: "1", unitCost: "", lotNumber: "", manufacturedAt: "", expiresAt: "", newProduct: { code: "", name: "", productClass: "GENERAL", unit: "ชิ้น", barcode: "", basePrice: "0", minStock: "0" } });
+const blankLine = (): DraftLine => ({ key: createClientId(), productMode: "EXISTING", productId: "", productSearch: "", lotChoice: "NEW", quantity: "1", unitCost: "", lotNumber: "", manufacturedAt: "", expiresAt: "", newProduct: { code: "", name: "", productClass: "GENERAL", unit: "ชิ้น", barcode: "", basePrice: "0", minStock: "0" } });
 const money = (value: string | number) => new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value));
 const qty = (value: string | number) => new Intl.NumberFormat("th-TH", { maximumFractionDigits: 3 }).format(Number(value));
 const date = (value?: string) => value ? new Intl.DateTimeFormat("th-TH", { dateStyle: "medium" }).format(new Date(value)) : "—";
@@ -181,7 +182,7 @@ export default function InventoryWorkspace() {
       const duplicate = new Set(resolvedLines.map(line => `${line.productId}:${line.lotChoice === "NEW" ? line.lotNumber.trim().toUpperCase() : line.lotChoice}`));
       if (duplicate.size !== resolvedLines.length) throw new Error("สินค้าและ Lot เดียวกันใส่ซ้ำในเอกสารไม่ได้");
       await apiRequest("/inventory/receipts", {
-        method: "POST", token, headers: { "Idempotency-Key": crypto.randomUUID() },
+        method: "POST", token, headers: { "Idempotency-Key": createClientId() },
         body: JSON.stringify({
           receivedAt: new Date(`${header.receivedAt}T12:00:00+07:00`).toISOString(),
           externalDocumentNo: header.externalDocumentNo.trim() || undefined,
@@ -226,7 +227,7 @@ export default function InventoryWorkspace() {
       await apiRequest("/inventory/adjustments", {
         method: "POST",
         token,
-        headers: { "Idempotency-Key": crypto.randomUUID() },
+        headers: { "Idempotency-Key": createClientId() },
         body: JSON.stringify({
           occurredAt: new Date(`${adjustment.occurredAt}T12:00:00+07:00`).toISOString(),
           reason: adjustment.reason.trim(),

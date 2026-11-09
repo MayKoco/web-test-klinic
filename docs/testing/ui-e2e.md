@@ -143,7 +143,31 @@
 | ใช้รหัสซ้ำ | แสดง conflict และไม่เพิ่มรายการซ้ำ |
 | API ปิดหรือ timeout | แสดง error และข้อมูลใน form ไม่ควรหาย |
 
-## Flow 8 — Logout
+## Flow 8 — Package และ Promotion
+
+1. เตรียม Catalog ที่เป็น `ACTIVE` อย่างน้อย 2 รายการ
+2. เปิดเมนู `แพ็กเกจและโปรโมชัน`
+3. กรอกรหัส ชื่อ รายละเอียด และราคาขายแพ็กเกจ
+4. เลือก Component อย่างน้อย 2 รายการพร้อมจำนวน
+5. กด `Preview ราคา`
+6. ตรวจ `รวมราคาอ้างอิง`, `ราคาขายแพ็กเกจ` และ `ประหยัด`
+7. เลือก `เปิดใช้งานทันที` แล้วกด `สร้างแพ็กเกจ`
+8. ตรวจว่า Package แสดงใน `แพ็กเกจทั้งหมด` และ Promotion picker
+9. กด `แก้ไข` เปลี่ยนราคาขาย แล้วบันทึก
+10. กด `Refresh ราคา` และตรวจว่าราคาขาย Package ไม่ถูกเปลี่ยน
+11. กด `ปิดใช้งาน` และตรวจว่า Package หายจาก Promotion picker
+
+**ผลที่คาดหวัง**
+
+- เลือก Component น้อยกว่า 2 รายการแล้ว Preview/Create ไม่ได้
+- Package ไม่มีช่องส่วนลดของตัวเอง
+- Preview เรียก API และแสดงผลรวมจาก Component จริง
+- ราคาขาย Package เปลี่ยนได้โดยใช้ version ล่าสุด
+- การแก้ไข Component ถูก Replace ทั้งชุด
+- Package ที่ Active เลือกไปสร้าง Promotion ได้
+- Package ที่ Inactive ไม่แสดงใน Promotion และ Checkout picker
+
+## Flow 9 — Logout
 
 1. กด `ออกจากระบบ` ใน Side menu
 2. ทดลองเปิด `/catalog` อีกครั้ง
@@ -162,6 +186,11 @@
 | สร้าง GENERAL เป็น ACTIVE |  |  |
 | สร้าง MEDICINE เป็น DRAFT |  |  |
 | สร้าง MEDICAL_SUPPLY เป็น DRAFT |  |  |
+| Package ต้องมีอย่างน้อย 2 Component |  |  |
+| Preview และสร้าง Package สำเร็จ |  |  |
+| แก้ราคา/Component และ Refresh สำเร็จ |  |  |
+| Active Package แสดงใน Promotion picker |  |  |
+| Inactive Package ไม่แสดงใน Promotion picker |  |  |
 | Validation และ API error แสดงถูกต้อง |  |  |
 | Logout และป้องกันหน้าที่ต้อง Login |  |  |
 

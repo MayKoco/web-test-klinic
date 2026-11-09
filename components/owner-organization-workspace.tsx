@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import { createClientId } from "@/lib/client-id";
 import { ClinicLoginResult, ClinicSessionProfile } from "@/lib/clinic-session";
 import { clearOwnerSession, OwnerSession, readOwnerSession } from "@/lib/owner-session";
 
@@ -100,7 +101,7 @@ export default function OwnerOrganizationWorkspace() {
     try {
       const result = await apiRequest<Branch>(`/owner/organizations/${encodeURIComponent(selectedOrganizationId)}/branches`, {
         method: "POST", token: ownerSession.accessToken,
-        headers: { "Idempotency-Key": crypto.randomUUID() },
+        headers: { "Idempotency-Key": createClientId() },
         body: JSON.stringify({ name: String(form.get("name") ?? "").trim(), code: String(form.get("code") ?? "").trim().toUpperCase(), packageId: String(form.get("packageId") ?? "") }),
       });
       setShowForm(false); setNotice(`เปิด ${result.data.name} สำเร็จ`);

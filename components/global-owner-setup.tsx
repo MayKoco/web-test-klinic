@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { ApiClientError, apiRequest } from "@/lib/api";
+import { createClientId } from "@/lib/client-id";
 
 const localAdmin = { email: "admin@platform.test", password: "Admin1234!" };
 
@@ -43,7 +44,7 @@ export default function GlobalOwnerSetup() {
       }>("/platform/organizations", {
         method: "POST",
         token: platform.data.accessToken,
-        headers: { "Idempotency-Key": crypto.randomUUID() },
+        headers: { "Idempotency-Key": createClientId() },
         body: JSON.stringify({
           name: form.organizationName.trim(),
           owner: {
