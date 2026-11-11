@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { ApiClientError, apiRequest } from "@/lib/api";
-import { createClientId } from "@/lib/client-id";
+import OwnerBranchPurchase, { returnedBranchOrganization } from "@/components/owner-branch-purchase";
+import { ClinicLoginResult, ClinicSessionProfile } from "@/lib/clinic-session";
 import {
   clearOwnerSession,
   OwnerSession,
   readOwnerSession,
+  renewOwnerSession,
   storeOwnerSession,
 } from "@/lib/owner-session";
 
@@ -40,33 +42,10 @@ type Branch = {
   membership: { role: string; clinicUserId: string | null } | null;
 };
 
-type OwnerPackage = {
-  id: string;
-  name: string;
-  description: string | null;
-  price: string | number;
-  subscriptionDays: number;
-  features: string[];
-};
-
-type BranchDraft = {
-  name: string;
-  code: string;
-  subdomain: string;
-  packageId: string;
-};
-
 const localOwner = {
   email: "owner.83670702@global.test",
   password: "OwnerPortal2026!",
 };
-
-const emptyBranch = (packageId = ""): BranchDraft => ({
-  name: "",
-  code: "",
-  subdomain: "",
-  packageId,
-});
 
 const clinicLoginUrl = (appUrl: string) =>
   `${appUrl.replace(/\/+$/, "")}/login`;
@@ -79,8 +58,6 @@ export default function OwnerPortal() {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState("");
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [packages, setPackages] = useState<OwnerPackage[]>([]);
-  const [branchDraft, setBranchDraft] = useState<BranchDraft>(emptyBranch());
   const [showBranchForm, setShowBranchForm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -92,32 +69,26 @@ export default function OwnerPortal() {
 
     Promise.resolve()
       .then(async () => {
-        setAccessToken(session.accessToken);
-        setRefreshToken(session.refreshToken);
-        setOwner(session.owner);
         setBusy(true);
-        return Promise.all([
-          apiRequest<Organization[]>(
-            "/owner/organizations?limit=100&sortBy=name&sortOrder=asc",
-            { token: session.accessToken },
-          ),
-          apiRequest<OwnerPackage[]>("/owner/packages", {
-            token: session.accessToken,
-          }),
-        ]);
-      })
-      .then(async ([organizationResult, packageResult]) => {
-        setOrganizations(organizationResult.data);
-        setPackages(packageResult.data);
-        setBranchDraft(emptyBranch(packageResult.data[0]?.id));
-        if (organizationResult.data[0]) {
-          const organizationId = organizationResult.data[0].id;
+        const returnedOrganization = returnedBranchOrganization();
+        const restored = returnedOrganization ? await renewOwnerSession(session) : session;
+        setAccessToken(restored.accessToken);
+        setRefreshToken(restored.refreshToken);
+        setOwner(restored.owner);
+        const result = await apiRequest<Organization[]>(
+          "/owner/organizations?limit=100&sortBy=name&sortOrder=asc", { token: restored.accessToken },
+        );
+        setOrganizations(result.data);
+        const returned = result.data.find((organization) => organization.id === returnedOrganization);
+        if (returned) setShowBranchForm(true);
+        const organizationId = returned?.id ?? result.data[0]?.id;
+        if (organizationId) {
           setSelectedOrganizationId(organizationId);
-          const branchResult = await apiRequest<Branch[]>(
+          const branches = await apiRequest<Branch[]>(
             `/owner/organizations/${encodeURIComponent(organizationId)}/branches?limit=100&sortBy=name&sortOrder=asc`,
-            { token: session.accessToken },
+            { token: restored.accessToken },
           );
-          setBranches(branchResult.data);
+          setBranches(branches.data);
         }
       })
       .catch((cause) => {
@@ -147,21 +118,14 @@ export default function OwnerPortal() {
       setRefreshToken(session.data.refreshToken);
       setOwner(session.data.owner);
       setCredentials((current) => ({ ...current, password: "" }));
-      const [organizationResult, packageResult] = await Promise.all([
-        apiRequest<Organization[]>(
-          "/owner/organizations?limit=100&sortBy=name&sortOrder=asc",
-          { token: session.data.accessToken },
-        ),
-        apiRequest<OwnerPackage[]>("/owner/packages", {
-          token: session.data.accessToken,
-        }),
-      ]);
+      const organizationResult = await apiRequest<Organization[]>(
+        "/owner/organizations?limit=100&sortBy=name&sortOrder=asc", { token: session.data.accessToken },
+      );
       setOrganizations(organizationResult.data);
-      setPackages(packageResult.data);
-      setBranchDraft(emptyBranch(packageResult.data[0]?.id));
-      if (organizationResult.data[0]) {
-        await loadBranches(organizationResult.data[0].id, session.data.accessToken);
-      }
+      const returned = organizationResult.data.find((organization) => organization.id === returnedBranchOrganization());
+      const organizationId = returned?.id ?? organizationResult.data[0]?.id;
+      if (returned) setShowBranchForm(true);
+      if (organizationId) await loadBranches(organizationId, session.data.accessToken);
     } catch (cause) {
       setError(message(cause));
     } finally {
@@ -184,40 +148,16 @@ export default function OwnerPortal() {
     }
   }
 
-  async function createBranch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedOrganizationId) return;
-    setBusy(true);
-    setError("");
-    setSuccess("");
+  async function enterPurchasedBranch(clinicId: string, code: string) {
     try {
-      const result = await apiRequest<Branch>(
-        `/owner/organizations/${encodeURIComponent(selectedOrganizationId)}/branches`,
-        {
-          method: "POST",
-          token: accessToken,
-          headers: { "Idempotency-Key": createClientId() },
-          body: JSON.stringify({
-            name: branchDraft.name.trim(),
-            code: branchDraft.code.trim(),
-            subdomain: branchDraft.subdomain.trim().toLowerCase(),
-            packageId: branchDraft.packageId,
-          }),
-        },
-      );
-      setSuccess(`สร้าง ${branchDraft.name.trim()} สำเร็จ · ${result.data.appUrl ?? result.data.subdomain ?? result.data.code}`);
-      setOrganizations((current) => current.map((organization) => (
-        organization.id === selectedOrganizationId
-          ? { ...organization, branchCount: organization.branchCount + 1 }
-          : organization
-      )));
-      setBranchDraft(emptyBranch(packages[0]?.id));
-      setShowBranchForm(false);
-      await loadBranches(selectedOrganizationId);
+      const { data } = await apiRequest<ClinicLoginResult>(`/owner/branches/${encodeURIComponent(clinicId)}/session`, { method: "POST", token: accessToken });
+      const profile: ClinicSessionProfile = { name: data.user.email, clinicCode: code, roles: data.user.roles };
+      window.localStorage.setItem("klinic-test-token", data.accessToken);
+      window.localStorage.setItem("klinic-test-profile", JSON.stringify(profile));
+      window.location.replace("/dashboard");
     } catch (cause) {
       setError(message(cause));
-    } finally {
-      setBusy(false);
+      setShowBranchForm(false);
     }
   }
 
@@ -234,7 +174,6 @@ export default function OwnerPortal() {
     setOwner(null);
     setOrganizations([]);
     setBranches([]);
-    setPackages([]);
     setSelectedOrganizationId("");
     setShowBranchForm(false);
     setSuccess("");
@@ -289,24 +228,20 @@ export default function OwnerPortal() {
             <button
               className="primary-button owner-new-branch-button"
               type="button"
-              disabled={!selectedOrganizationId || !packages.length}
+              disabled={!selectedOrganizationId}
               onClick={() => { setShowBranchForm((current) => !current); setError(""); setSuccess(""); }}
             >
               {showBranchForm ? "ยกเลิก" : "+ เปิดสาขาใหม่"}
             </button>
           </div>
-          {showBranchForm && (
-            <form className="owner-branch-form" onSubmit={createBranch}>
-              <header><div><p className="eyebrow">NEW CLINIC</p><h3>ข้อมูลสาขาใหม่</h3></div><small>Owner จะถูกเพิ่มเป็น OWNER ของสาขาอัตโนมัติ</small></header>
-              <div className="owner-branch-fields">
-                <label>ชื่อสาขา<input required maxLength={200} value={branchDraft.name} onChange={(event) => setBranchDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Klinic Chiang Mai" /></label>
-                <label>Clinic Code<input required minLength={3} maxLength={32} pattern="[A-Za-z0-9_-]+" value={branchDraft.code} onChange={(event) => setBranchDraft((current) => ({ ...current, code: event.target.value.toUpperCase() }))} placeholder="CNX01" /></label>
-                <label>Subdomain<input required minLength={3} maxLength={63} pattern="[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?" value={branchDraft.subdomain} onChange={(event) => setBranchDraft((current) => ({ ...current, subdomain: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") }))} placeholder="klinic-cnx" /><small>{branchDraft.subdomain ? `http://${branchDraft.subdomain}.lvh.me:3000` : "ใช้สำหรับ URL ของสาขา"}</small></label>
-                <label>Package<select required value={branchDraft.packageId} onChange={(event) => setBranchDraft((current) => ({ ...current, packageId: event.target.value }))}><option value="" disabled>เลือก Package</option>{packages.map((item) => <option key={item.id} value={item.id}>{item.name} · ฿{Number(item.price).toLocaleString()} / {item.subscriptionDays} วัน</option>)}</select></label>
-              </div>
-              <footer><span>ระบบจะ provision Clinic, Subscription และ Owner membership</span><button className="primary-button" disabled={busy}>{busy ? "กำลังสร้างสาขา..." : "ยืนยันเปิดสาขา"}</button></footer>
-            </form>
-          )}
+          {showBranchForm && selectedOrganization && <OwnerBranchPurchase
+            key={selectedOrganization.id}
+            token={accessToken}
+            organization={selectedOrganization}
+            onClose={() => setShowBranchForm(false)}
+            onReady={() => { setSuccess("สาขาใหม่พร้อมใช้งานแล้ว"); void loadBranches(selectedOrganization.id); }}
+            onEnter={(clinicId, code) => void enterPurchasedBranch(clinicId, code)}
+          />}
           <div className="owner-branch-grid">
             {branches.map((branch) => (
               <article key={branch.clinicId}>

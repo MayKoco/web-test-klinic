@@ -11,25 +11,33 @@ type Draft = {
   lastName: string;
   email: string;
   phone: string;
-  password: string;
   terms: boolean;
 };
 
 type SignupResult = {
   email: string;
-  emailDelivery: "PENDING" | "SENT" | "SKIPPED" | "FAILED";
-  appUrl: string | null;
+  operationId: string;
+  emailDelivery: ActivationDelivery;
 };
 
-type StreamSignupResult = Pick<SignupResult, "emailDelivery" | "appUrl">;
+type ActivationDelivery =
+  | "NOT_QUEUED"
+  | "PENDING"
+  | "PROCESSING"
+  | "SENT"
+  | "FAILED"
+  | "EXPIRED"
+  | "SUPERSEDED"
+  | "UNAVAILABLE"
+  | "ACTIVATED";
+
+type StreamSignupResult = Pick<SignupResult, "emailDelivery" | "operationId">;
 
 type SignupStep =
   | "VALIDATING"
   | "ACCOUNT_CREATED"
   | "CLINIC_PROVISIONING"
   | "CLINIC_READY"
-  | "OWNER_ACTIVATED"
-  | "EMAIL_QUEUED"
   | "COMPLETED"
   | "FAILED";
 
@@ -37,9 +45,7 @@ const signupSteps: Array<{ step: SignupStep; label: string }> = [
   { step: "VALIDATING", label: "ตรวจสอบข้อมูล" },
   { step: "ACCOUNT_CREATED", label: "สร้างบัญชี Owner" },
   { step: "CLINIC_PROVISIONING", label: "เตรียม Clinic และสิทธิ์" },
-  { step: "CLINIC_READY", label: "เปิดแพ็กเกจ Free" },
-  { step: "OWNER_ACTIVATED", label: "เปิดใช้งาน Owner" },
-  { step: "EMAIL_QUEUED", label: "เตรียมอีเมล Clinic Login" },
+  { step: "CLINIC_READY", label: "เปิดสิทธิ์ทดลองใช้ฟรี" },
   { step: "COMPLETED", label: "สร้างคลินิกสำเร็จ" },
 ];
 
@@ -50,7 +56,6 @@ const initialDraft: Draft = {
   lastName: "",
   email: "",
   phone: "",
-  password: "",
   terms: false,
 };
 
@@ -100,6 +105,36 @@ export default function PublicLanding() {
     };
   }, [signupModalOpen]);
 
+  const signupOperationId = submitted?.operationId;
+  useEffect(() => {
+    if (!signupModalOpen || !signupOperationId) return;
+    const controller = new AbortController();
+    const refresh = async () => {
+      try {
+        const response = await fetch(
+          `/api/clinic/public/free-tier/signup/${encodeURIComponent(signupOperationId)}/status`,
+          { cache: "no-store", signal: controller.signal },
+        );
+        if (!response.ok) return;
+        const { data } = await response.json() as { data: { emailDelivery: ActivationDelivery | null } };
+        const delivery = data.emailDelivery;
+        if (!controller.signal.aborted && delivery) {
+          setSubmitted((current) => current?.operationId === signupOperationId
+            ? { ...current, emailDelivery: delivery }
+            : current);
+        }
+      } catch {
+        // Preserve the last known state during a connection failure.
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [signupModalOpen, signupOperationId]);
+
   function update<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
     setSubmitted(null);
@@ -133,17 +168,15 @@ export default function PublicLanding() {
           firstName: draft.firstName.trim(),
           lastName: draft.lastName.trim(),
           ...(draft.phone.trim() ? { phone: draft.phone.trim() } : {}),
-          password: draft.password,
           acceptedTermsVersion: "2026-10-28",
         },
         setCurrentStep,
       );
       setSubmitted({
         email: draft.email.trim().toLowerCase(),
-        emailDelivery: signup.emailDelivery,
-        appUrl: signup.appUrl,
+        ...signup,
       });
-      setDraft((current) => ({ ...current, password: "", terms: false }));
+      setDraft((current) => ({ ...current, terms: false }));
     } catch (cause) {
       setError(
         cause instanceof ApiClientError
@@ -315,26 +348,20 @@ export default function PublicLanding() {
             เพื่อเปิดคลินิกแรก
           </h2>
           <p>
-            ทดลอง workflow จริงก่อนตัดสินใจอัปเกรด
+            ทดลองใช้ฟรีสำหรับสาขาแรกก่อนเลือกซื้อระยะเวลาใช้งาน
             ไม่มีค่าแรกเข้าและไม่ผูกบัตรเครดิต
           </p>
           <article className="public-plan-card">
             <header>
               <span>
-                <b>Free</b>
-                <small>สำหรับคลินิกเริ่มต้น</small>
+                <b>Klinic Free Trial</b>
+                <small>สำหรับสาขาแรกขององค์กรใหม่</small>
               </span>
               <strong>
-                ฿0<small>/ เดือน</small>
+                ฿0<small>ช่วงทดลองใช้ฟรี</small>
               </strong>
             </header>
-            <ul>
-              <li>1 คลินิก</li>
-              <li>Owner account 1 คน</li>
-              <li>นัดหมาย คิว และข้อมูลลูกค้า</li>
-              <li>Subdomain ของคลินิก</li>
-            </ul>
-            <p>แพ็กเกจถูกเลือกให้อัตโนมัติ ผู้ใช้ไม่ต้องกรอก Package ID</p>
+            <p>ใช้ฟีเจอร์ Klinic ชุดเดียวกับตัวเลือกแบบชำระเงิน</p>
           </article>
         </div>
 
@@ -342,7 +369,7 @@ export default function PublicLanding() {
           <header>
             <div>
               <p className="public-kicker">OPEN YOUR CLINIC</p>
-              <h2>เปิดคลินิกฟรี</h2>
+              <h2>สมัครทดลองใช้ฟรี</h2>
               <p>กรอกข้อมูลที่จำเป็น ระบบจะสร้างส่วนที่เหลือให้</p>
             </div>
             <span>FREE</span>
@@ -451,18 +478,6 @@ export default function PublicLanding() {
                 placeholder="08X-XXX-XXXX"
               />
             </label>
-            <label>
-              Password
-              <input
-                required
-                type="password"
-                minLength={8}
-                autoComplete="new-password"
-                value={draft.password}
-                onChange={(event) => update("password", event.target.value)}
-                placeholder="อย่างน้อย 8 ตัว"
-              />
-            </label>
           </fieldset>
 
           <label className="public-terms">
@@ -481,7 +496,7 @@ export default function PublicLanding() {
             className="public-submit"
             disabled={busy || domainStatus === "checking" || domainStatus === "unavailable"}
           >
-            {busy ? "กำลังสร้างคลินิก..." : "สร้างคลินิก Free Tier"}{" "}
+            {busy ? "กำลังสร้างคลินิก..." : "เริ่มทดลองใช้ฟรี"}{" "}
             <span>→</span>
           </button>
           <p className="public-form-note">
@@ -520,14 +535,16 @@ export default function PublicLanding() {
                   {error
                     ? "สร้างคลินิกไม่สำเร็จ"
                     : submitted
-                      ? "คลินิกของคุณพร้อมแล้ว"
+                      ? "สร้างคลินิกสำเร็จแล้ว"
                       : "กำลังสร้างคลินิกของคุณ"}
                 </h2>
                 <p id="signup-progress-description">
                   {error
                     ? "ตรวจสอบข้อความด้านล่าง แล้วลองสมัครอีกครั้ง"
                     : submitted
-                      ? "ทุกขั้นตอนเสร็จสมบูรณ์ คุณสามารถเข้าสู่ระบบได้ทันที"
+                      ? submitted.emailDelivery === "ACTIVATED"
+                        ? "บัญชี Owner เปิดใช้งานแล้ว คุณสามารถเข้าสู่ระบบคลินิกได้"
+                        : "บัญชี Owner รอเปิดใช้งาน กรุณาตั้งรหัสผ่านจากลิงก์ในอีเมลก่อนเข้าสู่ระบบ"
                       : "กรุณารอสักครู่ และอย่าปิดหน้าต่างนี้"}
                 </p>
               </div>
@@ -571,20 +588,9 @@ export default function PublicLanding() {
 
             {submitted && (
               <div className="signup-modal-result">
-                <p>
-                  {submitted.emailDelivery === "SENT"
-                    ? `ส่งรายละเอียดไปที่ ${submitted.email} แล้ว`
-                    : submitted.emailDelivery === "PENDING"
-                      ? `กำลังส่งรายละเอียดไปที่ ${submitted.email}`
-                      : `คลินิกพร้อมใช้งาน แต่ยังส่งอีเมลไปที่ ${submitted.email} ไม่สำเร็จ`}
+                <p role="status">
+                  {signupEmailMessage(submitted.emailDelivery, submitted.email)}
                 </p>
-                <div className="signup-modal-actions">
-                  {submitted.appUrl && (
-                    <a href={withLoginPath(submitted.appUrl)}>
-                      เข้าสู่ระบบคลินิก <span>→</span>
-                    </a>
-                  )}
-                </div>
               </div>
             )}
 
@@ -664,7 +670,7 @@ async function streamSignup(
       onProgress("COMPLETED");
       result = {
         emailDelivery: payload.emailDelivery,
-        appUrl: payload.branch?.appUrl ?? null,
+        operationId: payload.operationId,
       };
     }
     if (event === "error") {
@@ -711,11 +717,8 @@ async function pollSignupStatus(
       }
       if (status.status === "SUCCEEDED") {
         return {
-          emailDelivery:
-            status.emailDelivery === "SENT" || status.emailDelivery === "FAILED"
-              ? status.emailDelivery
-              : "PENDING",
-          appUrl: status.appUrl ?? null,
+          emailDelivery: status.emailDelivery ?? "NOT_QUEUED",
+          operationId,
         };
       }
       if (status.status === "FAILED") {
@@ -731,8 +734,17 @@ async function pollSignupStatus(
   throw new ApiClientError("หมดเวลารอตรวจสอบสถานะการสร้างคลินิก", 504);
 }
 
-function withLoginPath(appUrl: string) {
-  return `${appUrl.replace(/\/$/, "")}/login`;
+function signupEmailMessage(delivery: ActivationDelivery, email: string) {
+  switch (delivery) {
+    case "ACTIVATED": return "เปิดบัญชี Owner แล้ว";
+    case "SENT": return `ส่งลิงก์ตั้งรหัสผ่านไปที่ ${email} แล้ว กรุณาตรวจกล่องจดหมาย`;
+    case "PENDING":
+    case "PROCESSING": return `กำลังส่งลิงก์ตั้งรหัสผ่านไปที่ ${email}`;
+    case "NOT_QUEUED": return `สร้างสาขาแล้ว ระบบกำลังเตรียมอีเมลตั้งรหัสผ่านสำหรับ ${email}`;
+    case "EXPIRED":
+    case "SUPERSEDED": return "ลิงก์เดิมใช้ไม่ได้แล้ว กรุณาตรวจอีเมลล่าสุดหรือติดต่อทีมดูแลเพื่อขอลิงก์ใหม่";
+    default: return "สร้างสาขาแล้ว แต่ยังส่งลิงก์ตั้งรหัสผ่านไม่ได้ กรุณาติดต่อทีมดูแล";
+  }
 }
 
 function clinicSlug(value: string) {

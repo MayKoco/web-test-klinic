@@ -1,3 +1,5 @@
+import { ApiClientError, apiRequest } from "@/lib/api";
+
 export const OWNER_SESSION_KEY = "klinic-owner-session";
 
 export type OwnerSession = {
@@ -33,4 +35,22 @@ export function storeOwnerSession(session: OwnerSession) {
 
 export function clearOwnerSession() {
   window.localStorage.removeItem(OWNER_SESSION_KEY);
+}
+
+let refreshInProgress: Promise<OwnerSession> | null = null;
+
+export async function renewOwnerSession(session: OwnerSession) {
+  if (!refreshInProgress) {
+    refreshInProgress = apiRequest<OwnerSession>("/owner/auth/refresh", {
+      method: "POST",
+      body: JSON.stringify({ refreshToken: session.refreshToken }),
+    }).then(({ data }) => {
+      storeOwnerSession(data);
+      return data;
+    }).catch((error: unknown) => {
+      if (error instanceof ApiClientError && error.status === 401) clearOwnerSession();
+      throw error;
+    }).finally(() => { refreshInProgress = null; });
+  }
+  return refreshInProgress;
 }
