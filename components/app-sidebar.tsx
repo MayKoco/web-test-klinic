@@ -6,7 +6,7 @@ import { ClinicSessionProfile, hasOwnerRole } from "@/lib/clinic-session";
 import { clearOwnerSession } from "@/lib/owner-session";
 
 type SidebarProps = {
-  active: "dashboard" | "patients" | "queue" | "scheduling" | "treatments" | "catalog" | "promotions" | "inventory" | "sales" | "payments" | "resources" | "settings" | "users" | "organization";
+  active: "dashboard" | "patients" | "queue" | "scheduling" | "timeline-mock" | "treatments" | "catalog" | "promotions" | "inventory" | "sales" | "payments" | "resources" | "settings" | "users" | "organization";
   profile?: ClinicSessionProfile | null;
 };
 
@@ -19,6 +19,7 @@ type MenuItem = {
 };
 
 const groups: Array<{ label: string; ownerOnly?: boolean; items: MenuItem[] }> = [
+  { label: "Design lab", items: [{ id: "timeline-mock", href: "/appointments/mock", icon: "▦", label: "นัดหมาย · Mock design" }] },
   {
     label: "ภาพรวมและบริการ",
     items: [
