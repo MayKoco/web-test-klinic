@@ -1,5 +1,4 @@
-import PublicLanding from "@/components/public-landing";
-
+import { redirect } from "next/navigation";
 export default function Home() {
-  return <PublicLanding />;
+  redirect("/subscription/plans");
 }

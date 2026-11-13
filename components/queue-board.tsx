@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import NormalWalkInDialog from "@/components/normal-walk-in-dialog";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
 import { createClientId } from "@/lib/client-id";
@@ -298,6 +299,8 @@ export default function QueueBoard() {
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
   const [usageConfirmation, setUsageConfirmation] = useState<UsageConfirmationData | null>(null);
   const [checkInCard, setCheckInCard] = useState<BoardCard | null>(null);
+  const [walkInOpen, setWalkInOpen] = useState(false);
+  const [canBookWalkIn, setCanBookWalkIn] = useState(false);
   const [urgentOpen, setUrgentOpen] = useState(false);
 
   const loadBoard = useCallback(async (accessToken: string, targetDate: string, targetDoctor = "", term = "", silent = false) => {
@@ -327,6 +330,10 @@ export default function QueueBoard() {
         const doctorResponse = await apiRequest<Doctor[]>("/doctors?limit=100&sortBy=firstName&sortOrder=asc", { token: savedToken });
         setDoctors(doctorResponse.data);
       } catch { setDoctors([]); }
+      try {
+        const result = await apiRequest<{ permissions: string[] }>("/auth/me/permissions", { token: savedToken });
+        setCanBookWalkIn(["APPOINTMENT_VIEW", "APPOINTMENT_CREATE", "APPOINTMENT_UPDATE", "APPOINTMENT_CANCEL", "APPOINTMENT_ITEM_MANAGE", "PATIENT_VIEW", "PATIENT_CREATE", "PATIENT_UPDATE"].every(code => result.data.permissions.includes(code)));
+      } catch { setCanBookWalkIn(false); }
       await loadBoard(savedToken, localDate());
     });
   }, [loadBoard]);
@@ -682,7 +689,7 @@ export default function QueueBoard() {
             </select>
             <label className="queue-search"><span>⌕</span><input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="ค้นหาชื่อ, HN, เบอร์โทร…" /></label>
             <div className="queue-create-actions">
-              <Link className="soft-button walkin-button" href="/#appointment-form">+ Walk-in / นัดหมาย</Link>
+              {canBookWalkIn && <button className="soft-button walkin-button" type="button" onClick={() => setWalkInOpen(true)}>+ Walk-in ปกติ</button>}
               <button className="primary-button urgent-walkin-button" type="button" onClick={() => setUrgentOpen(true)}>+ Walk-in เร่งด่วน</button>
             </div>
           </section>
@@ -769,6 +776,11 @@ export default function QueueBoard() {
       {payment && <PaymentDialog value={payment} busy={Boolean(busy)} setValue={setPayment} close={() => setPayment(null)} saveDraft={() => void saveCheckoutDraft(false)} confirm={() => void saveCheckoutDraft(true)} save={savePayment} />}
       {receipt && <ReceiptDialog receipt={receipt} close={() => setReceipt(null)} />}
       {usageConfirmation && <UsageConfirmationDialog confirmation={usageConfirmation} close={() => setUsageConfirmation(null)} />}
+      {walkInOpen && <NormalWalkInDialog token={token} close={() => setWalkInOpen(false)} completed={async appointmentDate => {
+        setWalkInOpen(false); setDate(appointmentDate);
+        setNotice({ kind: "success", text: "จอง Walk-in ตามเวลาเข้าใช้บริการแล้ว · รอ Check-in" });
+        await loadBoard(token, appointmentDate, doctorId, search, true);
+      }} />}
       {urgentOpen && <UrgentWalkInDialog
         token={token}
         doctors={doctors}

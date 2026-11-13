@@ -1,0 +1,153 @@
+.page {
+  min-height: 100vh;
+  background: #f4f7fb;
+  color: #17314b;
+  padding: 40px 24px;
+  font-family: inherit;
+  font-size: 16px;
+}
+.wrap {
+  max-width: 1100px;
+  margin: auto;
+}
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 18px;
+}
+.card {
+  background: white;
+  border: 1px solid #dce5ef;
+  border-radius: 22px;
+  padding: 26px;
+  margin-bottom: 18px;
+}
+.card h1,
+.card h2 {
+  margin: 0 0 14px;
+}
+.muted {
+  color: #6a7c90;
+  line-height: 1.7;
+}
+.button {
+  display: inline-block;
+  border: 0;
+  border-radius: 12px;
+  background: #126ee3;
+  color: white;
+  font: inherit;
+  font-weight: 650;
+  padding: 12px 20px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-weight: 600;
+}
+.fields input,
+.fields textarea {
+  border: 1px solid #d7e1ed;
+  border-radius: 10px;
+  padding: 12px;
+  font: inherit;
+  background: white;
+  color: #17314b;
+}
+.actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 22px;
+}
+.error {
+  padding: 14px;
+  background: #fff1f2;
+  color: #b42343;
+  border-radius: 12px;
+}
+.notice {
+  padding: 14px;
+  background: #eaf7f1;
+  color: #15745a;
+  border-radius: 12px;
+}
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 0;
+  border-bottom: 1px solid #edf1f6;
+}
+.pill {
+  display: inline-block;
+  border-radius: 20px;
+  background: #eaf1fc;
+  padding: 5px 12px;
+  font-size: 14px;
+  margin: 4px;
+}
+.file {
+  display: block;
+  margin: 18px 0;
+  max-width: 100%;
+}
+.money {
+  font-size: 32px;
+  font-weight: 750;
+  margin: 16px 0;
+}
+.link {
+  color: #126ee3;
+  text-decoration: underline;
+}
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #17314b88;
+  overflow: auto;
+  padding: 24px;
+}
+.dialog {
+  max-width: 760px;
+  margin: 24px auto;
+}
+.small {
+  font-size: 14px;
+}
+@media (max-width: 650px) {
+  .fields {
+    grid-template-columns: 1fr;
+  }
+  .page {
+    padding: 24px 14px;
+  }
+  .card {
+    padding: 20px;
+  }
+  .head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

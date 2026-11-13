@@ -1,51 +1,47 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { ApiClientError, apiRequest } from "@/lib/api";
 import {
-  MOCK_DATE,
   duration,
-  extraMockRooms,
-  initialMockAppointments,
   minutes,
-  mockDoctors,
-  mockPatients,
-  mockRooms,
   overlaps,
   statusLabels,
-  suggestMockEndTime,
-  validateMockAppointment,
-  type MockAppointment,
-  type MockBlock,
-  type MockRoom,
-} from "@/lib/appointment-timeline-mock";
+  timeAt,
+  patientName,
+  mapTimeline,
+  loadTimeline,
+  validateBooking,
+  type ApiTimeline,
+  type BookingSuggestion,
+  type PatientOption,
+  type TimelineAppointment,
+  type TimelineBlock,
+  type TimelineRoom,
+} from "@/lib/appointment-timeline";
 import styles from "./appointment-timeline-mock.module.css";
 
-const START = 9 * 60;
-const hours = Array.from(
-  { length: 9 },
-  (_, index) => `${String(index + 9).padStart(2, "0")}:00`,
-);
-const doctorById = new Map(mockDoctors.map((doctor) => [doctor.id, doctor]));
 function shiftDate(value: string, amount: number) {
   const date = new Date(`${value}T12:00:00Z`);
   date.setUTCDate(date.getUTCDate() + amount);
   return date.toISOString().slice(0, 10);
 }
 function displayDate(value: string) {
+  if (!value) return "กำลังโหลดวันที่…";
   return new Intl.DateTimeFormat("th-TH", {
     dateStyle: "long",
     timeZone: "Asia/Bangkok",
   }).format(new Date(`${value}T12:00:00Z`));
 }
-function place(start: string, end: string, scale: number) {
+function position(start: string, end: string, scale: number, START: number) {
   return {
     left: ((minutes(start) - START) * scale) / 60,
     width: ((minutes(end) - minutes(start)) * scale) / 60,
   };
 }
-function arrange(appointments: MockAppointment[]) {
-  const lanes: MockAppointment[][] = [];
+function arrange(appointments: TimelineAppointment[]) {
+  const lanes: TimelineAppointment[][] = [];
   return [...appointments]
     .sort((a, b) => minutes(a.startTime) - minutes(b.startTime))
     .map((appointment) => {
@@ -61,128 +57,434 @@ function arrange(appointments: MockAppointment[]) {
     });
 }
 
-export default function AppointmentTimelineMock() {
-  const [date, setDate] = useState(MOCK_DATE);
-  const [appointments, setAppointments] = useState(initialMockAppointments);
+export default function AppointmentTimeline({
+  initialDate = "",
+}: {
+  initialDate?: string;
+}) {
+  const [token, setToken] = useState("");
+  const [permissions, setPermissions] = useState<string[]>([]);
+  const [sessionState, setSessionState] = useState<
+    "LOADING" | "READY" | "LOGIN" | "ERROR"
+  >("LOADING");
+  const [requestedDate, setRequestedDate] = useState(initialDate);
+  const [timeline, setTimeline] = useState<ApiTimeline | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const mutation = useRef(false);
+  const loadSequence = useRef(0);
+  const currentDate = useRef(requestedDate);
+
+  function setDate(value: string) {
+    if (mutation.current) return;
+    currentDate.current = value;
+    setRequestedDate(value);
+    const url = new URL(window.location.href);
+    url.searchParams.set("date", value);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+    setLoadError("");
+    setNotice("");
+  }
+  const date = requestedDate || timeline?.date || "";
+  const mapped = useMemo(
+    () =>
+      timeline
+        ? mapTimeline(timeline)
+        : { rooms: [], doctors: [], appointments: [] },
+    [timeline],
+  );
+  const { rooms, doctors, appointments } = mapped;
+  const doctorById = new Map(doctors.map((doctor) => [doctor.id, doctor]));
+  const canMutate = [
+    "APPOINTMENT_VIEW",
+    "APPOINTMENT_CREATE",
+    "APPOINTMENT_UPDATE",
+    "APPOINTMENT_CANCEL",
+    "APPOINTMENT_ITEM_MANAGE",
+  ].every((p) => permissions.includes(p));
+  const canLookup = ["PATIENT_VIEW", "PATIENT_CREATE", "PATIENT_UPDATE"].every(
+    (p) => permissions.includes(p),
+  );
+  const START =
+    Math.floor(minutes(timeline?.displayRange.startTime ?? "09:00") / 60) * 60;
+  const END =
+    Math.ceil(minutes(timeline?.displayRange.endTime ?? "18:00") / 60) * 60;
+  const hourCount = Math.max(1, (END - START) / 60);
+  const hours = Array.from({ length: hourCount }, (_, i) =>
+    timeAt(START + i * 60),
+  );
+  const place = (start: string, end: string, scale: number) =>
+    position(start, end, scale, START);
   const [roomId, setRoomId] = useState("");
   const [doctorId, setDoctorId] = useState("");
   const [search, setSearch] = useState("");
   const [onlyBooked, setOnlyBooked] = useState(false);
-  const [manyRooms, setManyRooms] = useState(false);
   const [zoom, setZoom] = useState("160");
   const [fitScale, setFitScale] = useState(100);
   const scale = zoom === "fit" ? fitScale : Number(zoom);
-  const [editing, setEditing] = useState<MockAppointment | null>(null);
-  const [dialogMode, setDialogMode] = useState<"DETAIL" | "RESCHEDULE" | "CANCEL" | "REVIEW">("DETAIL");
+  const [editing, setEditing] = useState<TimelineAppointment | null>(null);
+  const [dialogMode, setDialogMode] = useState<
+    "DETAIL" | "RESCHEDULE" | "CANCEL" | "REVIEW"
+  >("DETAIL");
   const [patientQuery, setPatientQuery] = useState("");
+  const [patientResults, setPatientResults] = useState<PatientOption[]>([]);
+  const [patientPage, setPatientPage] = useState(1);
+  const [patientPages, setPatientPages] = useState(1);
+  const [patientLoading, setPatientLoading] = useState(false);
+  const [patientError, setPatientError] = useState("");
   const [cancelReason, setCancelReason] = useState("");
   const [selectedBlock, setSelectedBlock] = useState<{
-    room: MockRoom;
-    block: MockBlock;
+    room: TimelineRoom;
+    block: TimelineBlock;
   } | null>(null);
   const [formError, setFormError] = useState("");
   const [notice, setNotice] = useState("");
+  const [suggestion, setSuggestion] = useState<BookingSuggestion | null>(null);
+  const [suggestionError, setSuggestionError] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
+  const autoEnd = useRef(true);
+  const suggestionSequence = useRef(0);
   const dialog = useRef<HTMLDialogElement>(null);
   const board = useRef<HTMLDivElement>(null);
   const idCounter = useRef(0);
+  const exists = !!editing && !editing.isDraft;
+  const editable = canMutate && editing?.status === "SCHEDULED";
+  const newBooking = !!editing?.isDraft;
+
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    const saved = localStorage.getItem("klinic-test-token");
+    void Promise.resolve().then(async () => {
+      if (!saved) {
+        if (active) setSessionState("LOGIN");
+        return;
+      }
+      try {
+        const result = await apiRequest<{ permissions: string[] }>(
+          "/auth/me/permissions",
+          { token: saved, signal: controller.signal },
+        );
+        if (!active) return;
+        setPermissions(result.data.permissions);
+        setToken(saved);
+        setSessionState("READY");
+      } catch (error) {
+        if (!active || controller.signal.aborted) return;
+        setSessionState(
+          error instanceof ApiClientError && error.status === 401
+            ? "LOGIN"
+            : "ERROR",
+        );
+        setLoadError(
+          error instanceof Error ? error.message : "ตรวจสอบ session ไม่สำเร็จ",
+        );
+      }
+    });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, []);
+  const refresh = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!token || currentDate.current !== requestedDate) return false;
+      const sequence = ++loadSequence.current;
+      setLoading(true);
+      setLoadError("");
+      try {
+        const result = await loadTimeline(token, requestedDate, signal);
+        if (
+          signal?.aborted ||
+          sequence !== loadSequence.current ||
+          currentDate.current !== requestedDate
+        )
+          return false;
+        setTimeline(result);
+        setRoomId((current) =>
+          !current || result.rooms.some((room) => room.roomId === current)
+            ? current
+            : "",
+        );
+        setDoctorId((current) =>
+          !current ||
+          result.rooms.some(
+            (room) =>
+              room.doctorShifts.some((shift) => shift.doctor.id === current) ||
+              room.appointments.some(
+                (appointment) => appointment.doctor.id === current,
+              ),
+          )
+            ? current
+            : "",
+        );
+        return true;
+      } catch (error) {
+        if (signal?.aborted || sequence !== loadSequence.current) return false;
+        setLoadError(
+          error instanceof Error ? error.message : "โหลดตารางนัดหมายไม่ได้",
+        );
+        if (error instanceof ApiClientError && error.status === 401)
+          setSessionState("LOGIN");
+        return false;
+      } finally {
+        if (sequence === loadSequence.current && !signal?.aborted)
+          setLoading(false);
+      }
+    },
+    [token, requestedDate, setRoomId, setDoctorId],
+  );
+  useEffect(() => {
+    if (!token) return;
+    const controller = new AbortController();
+    void Promise.resolve().then(() => refresh(controller.signal));
+    return () => controller.abort();
+  }, [token, refresh]);
   useEffect(() => {
     const element = board.current;
     if (!element) return;
     const measure = () => {
-      const labelWidth = Number.parseFloat(getComputedStyle(element).getPropertyValue("--room-width"));
-      // Used only when the user explicitly chooses the full-day overview.
-      setFitScale(Math.max(48, (element.clientWidth - labelWidth) / 9));
+      const labelWidth = Number.parseFloat(
+        getComputedStyle(element).getPropertyValue("--room-width"),
+      );
+      setFitScale(Math.max(48, (element.clientWidth - labelWidth) / hourCount));
     };
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     measure();
     return () => observer.disconnect();
-  }, []);
-  const rooms = useMemo(
-    () =>
-      (manyRooms ? [...mockRooms, ...extraMockRooms] : mockRooms).map((room) =>
-        date === MOCK_DATE ? room : { ...room, shifts: [], blocks: [] },
-      ),
-    [manyRooms, date],
-  );
+  }, [hourCount]);
   const dailyAppointments = appointments.filter(
-    (appointment) =>
-      appointment.date === date && appointment.status !== "CANCELLED",
+    (a) => a.date === date && a.status !== "CANCELLED",
   );
   const matchingAppointments = dailyAppointments.filter(
-    (appointment) =>
-      (!doctorId || appointment.doctorId === doctorId) &&
+    (a) =>
+      (!doctorId || a.doctorId === doctorId) &&
       (!search.trim() ||
-        `${appointment.patient} ${appointment.patientId} ${appointment.complaint}`
+        `${a.patient} ${a.hn ?? ""} ${a.complaint}`
           .toLowerCase()
           .includes(search.trim().toLowerCase())),
   );
   const visibleRooms = rooms.filter(
     (room) =>
       (!roomId || room.id === roomId) &&
-      (!doctorId || room.shifts.some((shift) => shift.doctorId === doctorId)) &&
-      (!onlyBooked ||
-        matchingAppointments.some(
-          (appointment) => appointment.roomId === room.id,
-        )),
+      (!doctorId ||
+        room.shifts.some((s) => s.doctorId === doctorId) ||
+        dailyAppointments.some(
+          (a) => a.roomId === room.id && a.doctorId === doctorId,
+        )) &&
+      (!onlyBooked || matchingAppointments.some((a) => a.roomId === room.id)),
   );
+  const staleDate = !!timeline && timeline.date !== date;
 
   useEffect(() => {
     if ((editing || selectedBlock) && !dialog.current?.open)
       dialog.current?.showModal();
   }, [editing, selectedBlock]);
-  function closeDialog() {
+  useEffect(() => {
+    if (!token || !newBooking || !canLookup || dialogMode === "REVIEW") return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setPatientLoading(true);
+      setPatientError("");
+      const query = new URLSearchParams({
+        search: patientQuery.trim(),
+        page: String(patientPage),
+        limit: "10",
+      });
+      void apiRequest<PatientOption[]>(`/patients?${query}`, {
+        token,
+        signal: controller.signal,
+      })
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          setPatientResults(result.data);
+          setPatientPages(Math.max(1, result.meta?.totalPages ?? 1));
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) {
+            setPatientResults([]);
+            setPatientError(
+              error instanceof Error ? error.message : "ค้นหาคนไข้ไม่สำเร็จ",
+            );
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setPatientLoading(false);
+        });
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [token, newBooking, canLookup, patientQuery, patientPage, dialogMode]);
+  const draftId = editing?.id,
+    draftDate = editing?.date,
+    draftRoom = editing?.roomId,
+    draftDoctor = editing?.doctorId,
+    draftStart = editing?.startTime,
+    draftPatient = editing?.patientId;
+  useEffect(() => {
+    if (
+      !newBooking ||
+      !canMutate ||
+      !token ||
+      !draftDate ||
+      !draftRoom ||
+      !draftDoctor ||
+      !draftStart
+    )
+      return;
+    const controller = new AbortController();
+    const sequence = ++suggestionSequence.current;
+    const timer = setTimeout(() => {
+      setSuggesting(true);
+      setSuggestion(null);
+      setSuggestionError("");
+      const query = new URLSearchParams({
+        date: draftDate,
+        roomId: draftRoom,
+        doctorId: draftDoctor,
+        startTime: draftStart,
+        ...(draftPatient ? { patientId: draftPatient } : {}),
+      });
+      void apiRequest<BookingSuggestion>(
+        `/appointments/booking-suggestion?${query}`,
+        { token, signal: controller.signal },
+      )
+        .then((result) => {
+          if (
+            controller.signal.aborted ||
+            sequence !== suggestionSequence.current
+          )
+            return;
+          setSuggestion(result.data);
+          if (autoEnd.current)
+            setEditing((value) =>
+              value && value.id === draftId
+                ? { ...value, endTime: result.data.endTime }
+                : value,
+            );
+        })
+        .catch((error) => {
+          if (
+            !controller.signal.aborted &&
+            sequence === suggestionSequence.current
+          )
+            setSuggestionError(
+              error instanceof Error ? error.message : "แนะนำเวลาไม่ได้",
+            );
+        })
+        .finally(() => {
+          if (
+            !controller.signal.aborted &&
+            sequence === suggestionSequence.current
+          )
+            setSuggesting(false);
+        });
+    }, 200);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    token,
+    newBooking,
+    canMutate,
+    draftId,
+    draftDate,
+    draftRoom,
+    draftDoctor,
+    draftStart,
+    draftPatient,
+  ]);
+
+  function closeDialog(force = false) {
+    if (mutation.current && !force) return;
     dialog.current?.close();
     setEditing(null);
     setSelectedBlock(null);
     setFormError("");
     setDialogMode("DETAIL");
     setCancelReason("");
+    setSuggestion(null);
+    setSuggestionError("");
   }
-  function edit(appointment: MockAppointment) {
+  function edit(appointment: TimelineAppointment) {
     setEditing({ ...appointment });
     setSelectedBlock(null);
     setFormError("");
     setDialogMode("DETAIL");
     setCancelReason("");
     setPatientQuery("");
+    setPatientPage(1);
   }
-  function create(room = rooms[0], startTime = "09:00") {
-    if (!room) return;
-    const start = minutes(startTime);
-    const shift = room.shifts.find(
-      (shift) =>
-        minutes(shift.startTime) <= start && minutes(shift.endTime) > start,
-    );
-    const selectedDoctor = shift?.doctorId ?? mockDoctors[0].id;
-    idCounter.current += 1;
+  function create(
+    room = rooms.find((room) =>
+      room.shifts.some(
+        (shift) =>
+          (!doctorId || shift.doctorId === doctorId) &&
+          shift.bookingIntervals.length > 0,
+      ),
+    ) ?? rooms[0],
+    startTime?: string,
+  ) {
+    if (!room || !canMutate || !canLookup || loading || busy || staleDate)
+      return;
+    const intervals = room.shifts
+      .filter((s) => !doctorId || s.doctorId === doctorId)
+      .flatMap((s) =>
+        s.bookingIntervals.map((range) => ({ ...range, doctorId: s.doctorId })),
+      );
+    const interval = startTime
+      ? intervals.find((s) => s.startTime <= startTime && startTime < s.endTime)
+      : intervals[0];
+    if (!interval) {
+      setNotice("ไม่มีช่วงเวลาที่แพทย์และห้องพร้อมรับนัดในเงื่อนไขนี้");
+      return;
+    }
+    autoEnd.current = true;
+    idCounter.current++;
     edit({
-      id: `local-${idCounter.current}`,
+      id: `draft-${idCounter.current}`,
+      isDraft: true,
       date,
       roomId: room.id,
-      doctorId: selectedDoctor,
+      doctorId: interval.doctorId,
       patientId: "",
       patient: "",
       complaint: "",
-      startTime,
-      endTime: suggestMockEndTime(startTime, room, selectedDoctor, date, appointments),
+      startTime: startTime ?? interval.startTime,
+      endTime: startTime ?? interval.startTime,
       status: "SCHEDULED",
     });
+    setSuggestion(null);
+    setSuggestionError("");
+    setSuggesting(true);
+    setPatientResults([]);
+    setPatientLoading(true);
   }
-  function save(event: React.FormEvent) {
+  async function save(event: React.FormEvent) {
     event.preventDefault();
-    if (!editing || editing.status !== "SCHEDULED") return;
-    const error = validateMockAppointment(editing, rooms, appointments);
+    if (!editing || !editable || mutation.current) return;
+    const error = validateBooking(editing, rooms, appointments);
     if (error) {
       setFormError(error);
       return;
     }
-    if (!exists && !mockPatients.some((patient) => patient.id === editing.patientId)) {
-      setFormError("กรุณาค้นหาและเลือกคนไข้จากรายการ");
+    if (!exists && (!editing.complaint.trim() || !canLookup)) {
+      setFormError("กรุณาเลือกคนไข้และระบุรายการนัดหรืออาการเบื้องต้น");
       return;
     }
-    if (!exists && !editing.complaint.trim()) {
-      setFormError("กรุณาระบุรายการนัดหรืออาการเบื้องต้น");
+    if (!exists && (suggesting || suggestionError || !suggestion)) {
+      setFormError(suggestionError || "กรุณารอระบบตรวจช่วงเวลาที่แนะนำ");
+      return;
+    }
+    if (!exists && suggestion && editing.endTime > suggestion.endTime) {
+      setFormError(
+        `ช่วงเวลาว่างสิ้นสุด ${suggestion.endTime} กรุณาปรับเวลาสิ้นสุด`,
+      );
       return;
     }
     if (!exists && dialogMode !== "REVIEW") {
@@ -190,45 +492,114 @@ export default function AppointmentTimelineMock() {
       setDialogMode("REVIEW");
       return;
     }
-    setAppointments((items) => exists
-      ? items.map((item) => item.id === editing.id ? editing : item)
-      : [...items, editing]);
-    setNotice(
-      `${exists ? "เลื่อนนัด" : "สร้างนัด"} ${editing.patient} · ${editing.startTime}–${editing.endTime} แล้ว (เฉพาะ Mock)`,
-    );
-    closeDialog();
+    mutation.current = true;
+    setBusy(true);
+    setFormError("");
+    try {
+      const payload = {
+        doctorId: editing.doctorId,
+        roomId: editing.roomId,
+        date: editing.date,
+        startTime: editing.startTime,
+        endTime: editing.endTime,
+        ...(!exists
+          ? {
+              patientId: editing.patientId,
+              chiefComplaint: editing.complaint.trim(),
+            }
+          : {}),
+      };
+      await apiRequest(
+        exists
+          ? `/appointments/${encodeURIComponent(editing.id)}`
+          : "/appointments",
+        {
+          token,
+          method: exists ? "PATCH" : "POST",
+          body: JSON.stringify(payload),
+        },
+      );
+      setNotice(
+        `${exists ? "เลื่อนนัด" : "สร้างนัด"} ${editing.patient} · ${editing.startTime}–${editing.endTime} สำเร็จ`,
+      );
+      closeDialog(true);
+      await refresh();
+    } catch (error) {
+      setFormError(
+        error instanceof ApiClientError
+          ? `${error.code}: ${error.message}`
+          : String(error),
+      );
+      if (error instanceof ApiClientError && error.status === 409)
+        await refresh();
+    } finally {
+      mutation.current = false;
+      setBusy(false);
+    }
   }
-  function cancelAppointment(event: React.FormEvent) {
+  async function cancelAppointment(event: React.FormEvent) {
     event.preventDefault();
-    if (!editing || editing.status !== "SCHEDULED") return;
+    if (!editing || !editable || mutation.current) return;
     if (!cancelReason.trim()) {
       setFormError("กรุณาระบุเหตุผลยกเลิกนัดหมาย");
       return;
     }
-    setAppointments((items) => items.map((item) => item.id === editing.id
-      ? { ...item, status: "CANCELLED", cancellationReason: cancelReason.trim() }
-      : item));
-    setNotice(`ยกเลิกนัด ${editing.patient} · เหตุผล: ${cancelReason.trim()} (เฉพาะ Mock)`);
-    closeDialog();
+    mutation.current = true;
+    setBusy(true);
+    setFormError("");
+    try {
+      await apiRequest(
+        `/appointments/${encodeURIComponent(editing.id)}/cancel`,
+        {
+          token,
+          method: "POST",
+          body: JSON.stringify({ reason: cancelReason.trim() }),
+        },
+      );
+      setNotice(`ยกเลิกนัด ${editing.patient} สำเร็จ`);
+      closeDialog(true);
+      await refresh();
+    } catch (error) {
+      setFormError(
+        error instanceof ApiClientError
+          ? `${error.code}: ${error.message}`
+          : String(error),
+      );
+      if (error instanceof ApiClientError && error.status === 409)
+        await refresh();
+    } finally {
+      mutation.current = false;
+      setBusy(false);
+    }
   }
-  const exists =
-    !!editing && appointments.some((item) => item.id === editing.id);
-  const editable = editing?.status === "SCHEDULED";
   const bookingMinutes = editing ? duration(editing) : 0;
-  const bookingDuration = !Number.isFinite(bookingMinutes) || bookingMinutes <= 0
-    ? "กรุณาเลือกเวลาเริ่มก่อนเวลาสิ้นสุด"
-    : [
-      bookingMinutes >= 60 ? `${Math.floor(bookingMinutes / 60)} ชั่วโมง` : "",
-      bookingMinutes % 60 ? `${bookingMinutes % 60} นาที` : "",
-    ].filter(Boolean).join(" ");
-  function updateBooking(patch: Partial<MockAppointment>) {
-    if (!editing) return;
-    const next = { ...editing, ...patch };
-    const room = rooms.find((item) => item.id === next.roomId);
-    if (!exists && room) next.endTime = suggestMockEndTime(next.startTime, room, next.doctorId, next.date, appointments);
-    setEditing(next);
+  const bookingDuration =
+    !Number.isFinite(bookingMinutes) || bookingMinutes <= 0
+      ? "กรุณาเลือกเวลาเริ่มก่อนเวลาสิ้นสุด"
+      : [
+          bookingMinutes >= 60
+            ? `${Math.floor(bookingMinutes / 60)} ชั่วโมง`
+            : "",
+          bookingMinutes % 60 ? `${bookingMinutes % 60} นาที` : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+  function updateBooking(patch: Partial<TimelineAppointment>) {
+    if (!editing || busy) return;
+    if (
+      patch.startTime !== undefined ||
+      patch.roomId !== undefined ||
+      patch.doctorId !== undefined ||
+      patch.patientId !== undefined
+    ) {
+      autoEnd.current = true;
+      setSuggestion(null);
+      setSuggestionError("");
+      setSuggesting(true);
+    }
+    setEditing({ ...editing, ...patch });
+    setFormError("");
   }
-
   return (
     <main className={styles.page}>
       <nav className={styles.navigation} aria-label="เมนูหน้าทดสอบ">
@@ -238,9 +609,9 @@ export default function AppointmentTimelineMock() {
         <div>
           <Link href="/appointments">นัดหมายเดิม</Link>
           <span>/</span>
-          <b>Timeline design</b>
+          <b>Timeline นัดหมาย</b>
         </div>
-        <span className={styles.mockBadge}>MOCK · ไม่บันทึกเข้าระบบ</span>
+        <span className={styles.mockBadge}>LIVE API · บันทึกเข้าระบบจริง</span>
       </nav>
       <header className={styles.header}>
         <div>
@@ -253,25 +624,15 @@ export default function AppointmentTimelineMock() {
         <div className={styles.headerActions}>
           <button
             className={styles.secondary}
-            onClick={() => {
-              setAppointments(initialMockAppointments);
-              setDate(MOCK_DATE);
-              setSearch("");
-              setDoctorId("");
-              setRoomId("");
-              setOnlyBooked(false);
-              setManyRooms(false);
-              setZoom("160");
-              setNotice("คืนข้อมูลตัวอย่างเริ่มต้นแล้ว");
-            }}
+            disabled={busy || loading || !token}
+            onClick={() => void refresh()}
           >
-            รีเซ็ตตัวอย่าง
+            รีเฟรชตาราง
           </button>
           <button
             className={styles.primary}
-            onClick={() =>
-              create(rooms.find((room) => room.id === roomId) ?? rooms[0])
-            }
+            disabled={!canMutate || !canLookup || loading || busy || staleDate}
+            onClick={() => create(rooms.find((room) => room.id === roomId))}
           >
             ＋ สร้างนัดหมาย
           </button>
@@ -310,16 +671,23 @@ export default function AppointmentTimelineMock() {
           <span>แพทย์เข้าเวร</span>
         </div>
         <p>
-          ข้อมูลจำลองวันที่ 10 พ.ย. 2569
+          ข้อมูลจากคลินิกที่เข้าสู่ระบบ
           <br />
-          <small>ลองสร้างนัด เลื่อนเวลา หรือทดสอบเวลาชนได้</small>
+          <small>
+            {canMutate
+              ? "ยืนยันแล้วบันทึกผ่าน API จริง"
+              : "ดูตารางตามสิทธิ์ของบัญชี"}
+          </small>
         </p>
       </section>
       <section className={styles.toolbar} aria-label="ตัวกรองนัดหมาย">
         <div className={styles.dateControl}>
           <button
             aria-label="วันก่อนหน้า"
-            onClick={() => setDate(shiftDate(date, -1))}
+            disabled={busy || !date}
+            onClick={() => {
+              if (!mutation.current) setDate(shiftDate(date, -1));
+            }}
           >
             ‹
           </button>
@@ -328,14 +696,18 @@ export default function AppointmentTimelineMock() {
             <input
               type="date"
               value={date}
-              onChange={(event) => {
-                if (event.target.value) setDate(event.target.value);
+              onInput={(event) => {
+                if (event.currentTarget.value && !mutation.current)
+                  setDate(event.currentTarget.value);
               }}
             />
           </label>
           <button
             aria-label="วันถัดไป"
-            onClick={() => setDate(shiftDate(date, 1))}
+            disabled={busy || !date}
+            onClick={() => {
+              if (!mutation.current) setDate(shiftDate(date, 1));
+            }}
           >
             ›
           </button>
@@ -355,7 +727,7 @@ export default function AppointmentTimelineMock() {
             onChange={(event) => setDoctorId(event.target.value)}
           >
             <option value="">แพทย์ทั้งหมด</option>
-            {mockDoctors.map((doctor) => (
+            {doctors.map((doctor) => (
               <option key={doctor.id} value={doctor.id}>
                 {doctor.name}
               </option>
@@ -382,7 +754,8 @@ export default function AppointmentTimelineMock() {
           <div>
             <h2>{displayDate(date)}</h2>
             <p>
-              09:00–18:00 <span>·</span> Asia/Bangkok
+              {timeAt(START)}–{timeAt(END)} <span>·</span>{" "}
+              {timeline?.timezone ?? "—"}
             </p>
           </div>
           <div className={styles.boardOptions}>
@@ -393,17 +766,6 @@ export default function AppointmentTimelineMock() {
                 onChange={(event) => setOnlyBooked(event.target.checked)}
               />{" "}
               เฉพาะห้องที่มีนัด
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={manyRooms}
-                onChange={(event) => {
-                  setManyRooms(event.target.checked);
-                  setRoomId("");
-                }}
-              />{" "}
-              ทดสอบ 12 ห้อง
             </label>
             <label>
               <span className={styles.srOnly}>ขนาดช่วงเวลา</span>
@@ -424,10 +786,41 @@ export default function AppointmentTimelineMock() {
             {notice}
           </p>
         )}
-        {date !== MOCK_DATE && (
+        {sessionState === "LOADING" && (
+          <p role="status" className={styles.info}>
+            กำลังตรวจสอบสิทธิ์เข้าสู่ระบบ…
+          </p>
+        )}
+        {sessionState === "LOGIN" && (
+          <p role="alert" className={styles.error}>
+            กรุณา <Link href="/login">เข้าสู่ระบบคลินิก</Link> ก่อนใช้งาน
+            Timeline
+          </p>
+        )}
+        {loadError && sessionState !== "LOGIN" && (
+          <p role="alert" className={styles.error}>
+            {loadError} ·{" "}
+            <button
+              className={styles.secondary}
+              onClick={() =>
+                sessionState === "ERROR"
+                  ? window.location.reload()
+                  : void refresh()
+              }
+            >
+              ลองอีกครั้ง
+            </button>
+          </p>
+        )}
+        {loading && (
+          <p role="status" className={styles.info}>
+            กำลังโหลดตารางนัดหมาย…
+          </p>
+        )}
+        {canMutate && !canLookup && (
           <p className={styles.info}>
-            วันนี้ไม่มีเวรและนัดหมายตัวอย่าง · เลือกวันที่ 10 พ.ย. 2569
-            เพื่อทดลอง flow
+            บัญชีนี้ยังไม่มีสิทธิ์ค้นหาคนไข้ จึงยังสร้างนัดใหม่ไม่ได้
+            กรุณาติดต่อผู้ดูแลสิทธิ์
           </p>
         )}
         {search && !matchingAppointments.length && (
@@ -445,7 +838,9 @@ export default function AppointmentTimelineMock() {
         >
           <div
             className={styles.timeline}
-            style={{ width: `calc(var(--room-width) + ${9 * scale}px)` }}
+            style={{
+              width: `calc(var(--room-width) + ${hourCount * scale}px)`,
+            }}
           >
             <div className={styles.timeHeader}>
               <div className={styles.corner}>
@@ -473,7 +868,11 @@ export default function AppointmentTimelineMock() {
                 (shift) => !doctorId || shift.doctorId === doctorId,
               );
               const roomClosed = room.opening.length === 0;
-              const leave = room.blocks.find((block) => block.kind === "LEAVE");
+              const leave = room.blocks.find(
+                (block) =>
+                  block.kind === "LEAVE" &&
+                  shifts.every((shift) => shift.bookingIntervals.length === 0),
+              );
               return (
                 <div
                   className={styles.roomRow}
@@ -507,7 +906,7 @@ export default function AppointmentTimelineMock() {
                   </div>
                   <div
                     className={styles.track}
-                    style={{ width: 9 * scale }}
+                    style={{ width: hourCount * scale }}
                   >
                     {shifts.map((shift, index) => {
                       const doctor = doctorById.get(shift.doctorId)!;
@@ -516,21 +915,53 @@ export default function AppointmentTimelineMock() {
                           key={`${shift.doctorId}-${index}`}
                           className={`${styles.shift} ${styles[doctor.tone]}`}
                           style={place(shift.startTime, shift.endTime, scale)}
-                          role="button"
-                          tabIndex={0}
-                          aria-label={`สร้างนัดกับ ${doctor.name} ${shift.startTime}–${shift.endTime} ${room.name}`}
+                          role={canMutate && canLookup ? "button" : undefined}
+                          aria-disabled={
+                            !canMutate ||
+                            !canLookup ||
+                            loading ||
+                            busy ||
+                            staleDate ||
+                            !shift.bookingIntervals.length
+                          }
+                          tabIndex={
+                            canMutate &&
+                            canLookup &&
+                            !loading &&
+                            !busy &&
+                            !staleDate &&
+                            shift.bookingIntervals.length
+                              ? 0
+                              : -1
+                          }
+                          aria-label={`${canMutate && canLookup ? "สร้างนัดกับ" : "เวรแพทย์"} ${doctor.name} ${shift.startTime}–${shift.endTime} ${room.name}`}
                           onClick={(event) => {
-                            const offset = event.clientX - event.currentTarget.getBoundingClientRect().left;
+                            const offset =
+                              event.clientX -
+                              event.currentTarget.getBoundingClientRect().left;
                             const minute = Math.max(
                               minutes(shift.startTime),
-                              Math.min(minutes(shift.endTime) - 5, minutes(shift.startTime) + Math.round(offset / scale * 60 / 5) * 5),
+                              Math.min(
+                                minutes(shift.endTime) - 5,
+                                minutes(shift.startTime) +
+                                  Math.round(((offset / scale) * 60) / 5) * 5,
+                              ),
                             );
-                            create(room, `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`);
+                            const tapped = timeAt(minute);
+                            if (
+                              shift.bookingIntervals.some(
+                                (interval) =>
+                                  interval.startTime <= tapped &&
+                                  tapped < interval.endTime,
+                              )
+                            )
+                              create(room, tapped);
                           }}
                           onKeyDown={(event) => {
                             if (event.key === "Enter" || event.key === " ") {
                               event.preventDefault();
-                              create(room, shift.startTime);
+                              const first = shift.bookingIntervals[0];
+                              if (first) create(room, first.startTime);
                             }
                           }}
                         >
@@ -561,7 +992,11 @@ export default function AppointmentTimelineMock() {
                             setEditing(null);
                           }}
                         >
-                          <b>แพทย์ลา</b>
+                          <b>
+                            {block.resource === "ROOM"
+                              ? "ห้องไม่พร้อมใช้งาน"
+                              : "แพทย์ไม่พร้อมปฏิบัติงาน"}
+                          </b>
                           <small>
                             {block.startTime}–{block.endTime}
                           </small>
@@ -571,7 +1006,7 @@ export default function AppointmentTimelineMock() {
                     {laidOut.map(({ appointment, lane }) => (
                       <button
                         key={appointment.id}
-                        className={`${styles.appointment} ${styles[appointment.status.toLowerCase()]} ${duration(appointment) * scale / 60 < 85 ? styles.shortCard : ""}`}
+                        className={`${styles.appointment} ${styles[appointment.status.toLowerCase()]} ${(duration(appointment) * scale) / 60 < 85 ? styles.shortCard : ""}`}
                         style={{
                           ...place(
                             appointment.startTime,
@@ -589,7 +1024,9 @@ export default function AppointmentTimelineMock() {
                           <i aria-hidden="true">↗</i>
                         </span>
                         <span className={styles.cardTime}>
-                          <span>{appointment.startTime}</span><span className={styles.timeSeparator}>–</span><span>{appointment.endTime}</span>
+                          <span>{appointment.startTime}</span>
+                          <span className={styles.timeSeparator}>–</span>
+                          <span>{appointment.endTime}</span>
                         </span>
                         <span className={styles.cardComplaint}>
                           {appointment.complaint}
@@ -630,6 +1067,10 @@ export default function AppointmentTimelineMock() {
               กำลังรักษา
             </span>
             <span>
+              <i className={styles.legendPending} />
+              รอบันทึกการรักษา
+            </span>
+            <span>
               <i className={styles.legendGray} />
               เสร็จสิ้น
             </span>
@@ -639,27 +1080,28 @@ export default function AppointmentTimelineMock() {
             </span>
           </div>
           <p>
-            แตะการ์ดเพื่อดูรายละเอียด · แตะพื้นที่ว่างในกรอบเวรแพทย์เพื่อลงทะเบียนนัดหมาย
+            แตะการ์ดเพื่อดูรายละเอียด ·
+            แตะพื้นที่ว่างในกรอบเวรแพทย์เพื่อลงทะเบียนนัดหมาย
           </p>
         </footer>
       </section>
       <p className={styles.footnote}>
-        Design preview · การตรวจเวลาชนเป็นการจำลองใน browser เท่านั้น ·
-        รีเฟรชแล้วข้อมูลกลับค่าเริ่มต้น
+        ข้อมูลจาก API จริง · ตรวจสอบช่วงเวลาอีกครั้งเมื่อยืนยัน ·
+        ตารางเวรและสิทธิ์เป็นไปตามข้อมูลของคลินิก
       </p>
       <dialog
         ref={dialog}
         className={styles.dialog}
-        aria-labelledby="mock-dialog-title"
-        onCancel={() => {
-          setEditing(null);
-          setSelectedBlock(null);
+        aria-labelledby="timeline-dialog-title"
+        onCancel={(event) => {
+          if (mutation.current) event.preventDefault();
+          else closeDialog();
         }}
       >
         <div className={styles.dialogHeader}>
           <div>
-            <p className={styles.eyebrow}>LOCAL MOCK</p>
-            <h2 id="mock-dialog-title">
+            <p className={styles.eyebrow}>CLINIC APPOINTMENT</p>
+            <h2 id="timeline-dialog-title">
               {selectedBlock
                 ? selectedBlock.block.reason
                 : dialogMode === "CANCEL"
@@ -668,14 +1110,15 @@ export default function AppointmentTimelineMock() {
                     ? "เลื่อนนัดหมาย"
                     : dialogMode === "REVIEW"
                       ? "ตรวจสอบนัดหมายก่อนยืนยัน"
-                : exists
-                  ? "รายละเอียดนัดหมาย"
-                  : "ลงทะเบียนนัดหมาย"}
+                      : exists
+                        ? "รายละเอียดนัดหมาย"
+                        : "ลงทะเบียนนัดหมาย"}
             </h2>
           </div>
           <button
+            disabled={busy}
             className={styles.close}
-            onClick={closeDialog}
+            onClick={() => closeDialog()}
             aria-label="ปิดหน้าต่าง"
           >
             ×
@@ -698,48 +1141,161 @@ export default function AppointmentTimelineMock() {
           </div>
         ) : editing && exists && dialogMode === "CANCEL" ? (
           <form onSubmit={cancelAppointment} className={styles.form}>
-            <p className={styles.formHint}>{editing.patient} · {displayDate(editing.date)} · {editing.startTime}–{editing.endTime}</p>
-            <label>เหตุผลยกเลิกนัดหมาย
-              <input autoFocus required value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} placeholder="ระบุเหตุผลยกเลิก" />
+            <p className={styles.formHint}>
+              {editing.patient} · {displayDate(editing.date)} ·{" "}
+              {editing.startTime}–{editing.endTime}
+            </p>
+            <label>
+              เหตุผลยกเลิกนัดหมาย
+              <input
+                disabled={busy}
+                autoFocus
+                required
+                value={cancelReason}
+                onChange={(event) => setCancelReason(event.target.value)}
+                placeholder="ระบุเหตุผลยกเลิก"
+              />
             </label>
-            {formError && <p role="alert" className={styles.error}>{formError}</p>}
+            {formError && (
+              <p role="alert" className={styles.error}>
+                {formError}
+              </p>
+            )}
             <div className={styles.formActions}>
-              <button type="button" className={styles.secondary} onClick={() => { setDialogMode("DETAIL"); setFormError(""); }}>กลับ</button>
-              <button type="submit" className={styles.danger}>ยืนยันยกเลิกนัดหมาย</button>
+              <button
+                disabled={busy}
+                type="button"
+                className={styles.secondary}
+                onClick={() => {
+                  setDialogMode("DETAIL");
+                  setFormError("");
+                }}
+              >
+                กลับ
+              </button>
+              <button disabled={busy} type="submit" className={styles.danger}>
+                ยืนยันยกเลิกนัดหมาย
+              </button>
             </div>
-            <small className={styles.formDisclaimer}>ยกเลิกเฉพาะข้อมูล Mock ไม่ส่งไปยัง API</small>
+            <small className={styles.formDisclaimer}>
+              ยืนยันแล้วจะยกเลิกนัดในระบบจริงพร้อมบันทึกเหตุผล
+            </small>
           </form>
-        ) : editing && ((exists && dialogMode === "DETAIL") || dialogMode === "REVIEW") ? (
+        ) : editing &&
+          ((exists && dialogMode === "DETAIL") || dialogMode === "REVIEW") ? (
           <section className={styles.details} aria-label="ข้อมูลนัดหมาย">
             <div className={styles.detailPatient}>
-              <span className={styles.detailAvatar} aria-hidden="true">{editing.patient.replace(/^คุณ/, "").slice(0, 1)}</span>
-              <div><h3>{editing.patient}</h3><p>รหัสคนไข้ {editing.patientId}</p></div>
-              <span className={`${styles.detailStatus} ${styles[editing.status.toLowerCase()]}`}>{statusLabels[editing.status]}</span>
-            </div>
-            <div className={styles.detailTime}><b>{editing.startTime}–{editing.endTime}</b><span>{duration(editing)} นาที</span></div>
-            <dl className={styles.detailList}>
-              <div><dt>วันที่นัดหมาย</dt><dd>{displayDate(editing.date)}</dd></div>
-              <div><dt>ห้องตรวจ</dt><dd>{rooms.find((room) => room.id === editing.roomId)?.name ?? "—"}</dd></div>
-              <div><dt>แพทย์</dt><dd>{doctorById.get(editing.doctorId)?.name ?? "—"}</dd></div>
-              <div><dt>รายการนัด / อาการเบื้องต้น</dt><dd>{editing.complaint || "ไม่ได้ระบุ"}</dd></div>
-            </dl>
-            {formError && <p role="alert" className={styles.error}>{formError}</p>}
-            {dialogMode === "REVIEW" ? <form onSubmit={save}>
-              <div className={styles.formActions}>
-                <button type="button" className={styles.secondary} onClick={() => { setDialogMode("DETAIL"); setFormError(""); }}>กลับไปแก้ไข</button>
-                <button type="submit" className={styles.primary}>ยืนยันลงทะเบียนนัดหมาย</button>
+              <span className={styles.detailAvatar} aria-hidden="true">
+                {editing.patient.replace(/^คุณ/, "").slice(0, 1)}
+              </span>
+              <div>
+                <h3>{editing.patient}</h3>
+                <p>รหัสคนไข้ {editing.hn ?? editing.patientId}</p>
               </div>
-              <small className={styles.formDisclaimer}>ข้อมูลจำลองเท่านั้น ยังไม่บันทึกจนกว่าจะกดยืนยัน</small>
-            </form> : <>
-            {!editable && <p className={styles.info}>ตัวอย่างนี้ให้เลื่อนหรือยกเลิกได้เฉพาะสถานะนัดหมาย (SCHEDULED)</p>}
-            <div className={styles.formActions}>
-              {editable && <>
-                <button type="button" className={styles.danger} onClick={() => setDialogMode("CANCEL")}>ยกเลิกนัดหมาย</button>
-                <button type="button" className={styles.primary} onClick={() => setDialogMode("RESCHEDULE")}>เลื่อนนัดหมาย</button>
-              </>}
-              <button type="button" className={styles.secondary} onClick={closeDialog}>ปิด</button>
+              <span
+                className={`${styles.detailStatus} ${styles[editing.status.toLowerCase()]}`}
+              >
+                {statusLabels[editing.status]}
+              </span>
             </div>
-            </>}
+            <div className={styles.detailTime}>
+              <b>
+                {editing.startTime}–{editing.endTime}
+              </b>
+              <span>{duration(editing)} นาที</span>
+            </div>
+            <dl className={styles.detailList}>
+              <div>
+                <dt>วันที่นัดหมาย</dt>
+                <dd>{displayDate(editing.date)}</dd>
+              </div>
+              <div>
+                <dt>ห้องตรวจ</dt>
+                <dd>
+                  {rooms.find((room) => room.id === editing.roomId)?.name ??
+                    "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>แพทย์</dt>
+                <dd>{doctorById.get(editing.doctorId)?.name ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>รายการนัด / อาการเบื้องต้น</dt>
+                <dd>{editing.complaint || "ไม่ได้ระบุ"}</dd>
+              </div>
+            </dl>
+            {formError && (
+              <p role="alert" className={styles.error}>
+                {formError}
+              </p>
+            )}
+            {dialogMode === "REVIEW" ? (
+              <form onSubmit={save}>
+                <div className={styles.formActions}>
+                  <button
+                    disabled={busy}
+                    type="button"
+                    className={styles.secondary}
+                    onClick={() => {
+                      setDialogMode("DETAIL");
+                      setFormError("");
+                    }}
+                  >
+                    กลับไปแก้ไข
+                  </button>
+                  <button
+                    disabled={busy}
+                    type="submit"
+                    className={styles.primary}
+                  >
+                    ยืนยันลงทะเบียนนัดหมาย
+                  </button>
+                </div>
+                <small className={styles.formDisclaimer}>
+                  ยังไม่บันทึกจนกว่าจะกดยืนยัน จากนั้นจะสร้างนัดในระบบจริง
+                </small>
+              </form>
+            ) : (
+              <>
+                {!editable && (
+                  <p className={styles.info}>
+                    เลื่อนหรือยกเลิกจากหน้านี้ได้เมื่อมีสิทธิ์จัดการนัดหมายและสถานะเป็น
+                    SCHEDULED
+                  </p>
+                )}
+                <div className={styles.formActions}>
+                  {editable && (
+                    <>
+                      <button
+                        disabled={busy}
+                        type="button"
+                        className={styles.danger}
+                        onClick={() => setDialogMode("CANCEL")}
+                      >
+                        ยกเลิกนัดหมาย
+                      </button>
+                      <button
+                        disabled={busy}
+                        type="button"
+                        className={styles.primary}
+                        onClick={() => setDialogMode("RESCHEDULE")}
+                      >
+                        เลื่อนนัดหมาย
+                      </button>
+                    </>
+                  )}
+                  <button
+                    disabled={busy}
+                    type="button"
+                    className={styles.secondary}
+                    onClick={() => closeDialog()}
+                  >
+                    ปิด
+                  </button>
+                </div>
+              </>
+            )}
           </section>
         ) : (
           editing && (
@@ -748,30 +1304,111 @@ export default function AppointmentTimelineMock() {
                 {displayDate(editing.date)} · {statusLabels[editing.status]}
                 {exists && ` · ${duration(editing)} นาที`}
               </p>
-              <fieldset disabled={!editable}>
-                {exists ? <p className={styles.formHint}>{editing.patient} · รหัสคนไข้ {editing.patientId}</p> : <>
-                <label>
-                  ค้นหาคนไข้
-                  <input
-                    autoFocus
-                    value={patientQuery}
-                    onChange={(event) => {
-                      setPatientQuery(event.target.value);
-                      setEditing({ ...editing, patientId: "", patient: "" });
-                    }}
-                    placeholder="ชื่อ เบอร์โทร หรือรหัสคนไข้"
-                  />
-                </label>
-                <div className={styles.patientResults} aria-label="ผลค้นหาคนไข้">
-                  {mockPatients.filter((patient) => `${patient.name} ${patient.phone} ${patient.code} ${patient.id}`.toLowerCase().includes(patientQuery.trim().toLowerCase())).map((patient) => (
-                    <button key={patient.id} type="button" aria-pressed={editing.patientId === patient.id} onClick={() => { setEditing({ ...editing, patientId: patient.id, patient: patient.name }); setFormError(""); }}>
-                      <b>{patient.name}</b><span>{patient.code} · {patient.phone}</span>
-                      {editing.patientId === patient.id && <small>เลือกแล้ว ✓</small>}
-                    </button>
-                  ))}
-                  {!mockPatients.some((patient) => `${patient.name} ${patient.phone} ${patient.code} ${patient.id}`.toLowerCase().includes(patientQuery.trim().toLowerCase())) && <p role="status">ไม่พบคนไข้ ลองค้นหาด้วยชื่อ เบอร์โทร หรือรหัสคนไข้อื่น</p>}
-                </div>
-                </>}
+              <fieldset disabled={!editable || busy}>
+                {exists ? (
+                  <p className={styles.formHint}>
+                    {editing.patient} · รหัสคนไข้{" "}
+                    {editing.hn ?? editing.patientId}
+                  </p>
+                ) : (
+                  <>
+                    <label>
+                      ค้นหาคนไข้
+                      <input
+                        autoFocus
+                        value={patientQuery}
+                        onChange={(event) => {
+                          setPatientQuery(event.target.value);
+                          setPatientResults([]);
+                          setPatientLoading(true);
+                          setPatientPage(1);
+                          updateBooking({
+                            patientId: "",
+                            patient: "",
+                            hn: undefined,
+                          });
+                        }}
+                        placeholder="ชื่อ เบอร์โทร หรือรหัสคนไข้"
+                      />
+                    </label>
+                    <div
+                      className={styles.patientResults}
+                      aria-label="ผลค้นหาคนไข้"
+                      aria-busy={patientLoading}
+                    >
+                      {patientLoading && <p role="status">กำลังค้นหาคนไข้…</p>}
+                      {patientError && (
+                        <p role="alert" className={styles.error}>
+                          {patientError}
+                        </p>
+                      )}
+                      {patientResults.map((patient) => (
+                        <button
+                          key={patient.id}
+                          type="button"
+                          aria-pressed={editing.patientId === patient.id}
+                          onClick={() => {
+                            updateBooking({
+                              patientId: patient.id,
+                              patient: patientName(patient),
+                              hn: patient.hn,
+                            });
+                            setFormError("");
+                          }}
+                        >
+                          <b>{patientName(patient)}</b>
+                          <span>
+                            {patient.hn} · {patient.phone}
+                          </span>
+                          {editing.patientId === patient.id && (
+                            <small>เลือกแล้ว ✓</small>
+                          )}
+                        </button>
+                      ))}
+                      {!patientLoading &&
+                        !patientError &&
+                        !patientResults.length && (
+                          <p role="status">
+                            ไม่พบคนไข้ ลองค้นหาด้วยชื่อ เบอร์โทร
+                            หรือรหัสคนไข้อื่น
+                          </p>
+                        )}
+                    </div>
+                    {patientPages > 1 && (
+                      <div className={styles.formActions}>
+                        <button
+                          type="button"
+                          disabled={patientLoading || patientPage <= 1}
+                          className={styles.secondary}
+                          onClick={() => {
+                            setPatientLoading(true);
+                            setPatientResults([]);
+                            setPatientPage((page) => page - 1);
+                          }}
+                        >
+                          ก่อนหน้า
+                        </button>
+                        <span>
+                          หน้า {patientPage} / {patientPages}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={
+                            patientLoading || patientPage >= patientPages
+                          }
+                          className={styles.secondary}
+                          onClick={() => {
+                            setPatientLoading(true);
+                            setPatientResults([]);
+                            setPatientPage((page) => page + 1);
+                          }}
+                        >
+                          ถัดไป
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
                 <div className={styles.formGrid}>
                   <label>
                     ห้องตรวจ
@@ -796,7 +1433,7 @@ export default function AppointmentTimelineMock() {
                         updateBooking({ doctorId: event.target.value })
                       }
                     >
-                      {mockDoctors.map((doctor) => (
+                      {doctors.map((doctor) => (
                         <option key={doctor.id} value={doctor.id}>
                           {doctor.name}
                         </option>
@@ -822,31 +1459,61 @@ export default function AppointmentTimelineMock() {
                   <label>
                     เวลาสิ้นสุด
                     <input
-                      type="time"
+                      type={editing.endTime === "24:00" ? "text" : "time"}
                       step={60}
                       required
                       value={editing.endTime}
-                      onInput={(event) =>
-                        setEditing({ ...editing, endTime: event.currentTarget.value })
-                      }
+                      onInput={(event) => {
+                        autoEnd.current = false;
+                        setEditing({
+                          ...editing,
+                          endTime: event.currentTarget.value,
+                        });
+                        setFormError("");
+                      }}
                     />
                   </label>
                 </div>
-                <p className={styles.bookingDuration} role="status" aria-live="polite">ระยะเวลานัดหมาย: <strong>{bookingDuration}</strong></p>
-                {!exists && <p className={styles.formHint}>เสนอเวลาสิ้นสุดถึงคิวถัดไป หรือสิ้นสุดเวรหากไม่มีคิวถัดไป สามารถปรับให้สั้นลงได้</p>}
-                {exists ? <p className={styles.formHint}>รายการนัด: {editing.complaint || "ไม่ได้ระบุ"}</p> : <label>
-                  รายการนัด / อาการเบื้องต้น
-                  <input
-                    value={editing.complaint}
-                    onChange={(event) =>
-                      setEditing({ ...editing, complaint: event.target.value })
-                    }
-                  />
-                </label>}
+                <p
+                  className={styles.bookingDuration}
+                  role="status"
+                  aria-live="polite"
+                >
+                  ระยะเวลานัดหมาย: <strong>{bookingDuration}</strong>
+                </p>
+                {!exists && (
+                  <p className={styles.formHint} role="status">
+                    {suggesting
+                      ? "กำลังตรวจเวลาว่างจาก API…"
+                      : suggestionError ||
+                        (suggestion
+                          ? `เวลาว่างที่แนะนำ ${suggestion.startTime}–${suggestion.endTime} · ปรับเวลาสิ้นสุดให้สั้นลงได้`
+                          : "เลือกแพทย์ ห้อง และเวลาเริ่มเพื่อแนะนำเวลาสิ้นสุด")}
+                  </p>
+                )}
+                {exists ? (
+                  <p className={styles.formHint}>
+                    รายการนัด: {editing.complaint || "ไม่ได้ระบุ"}
+                  </p>
+                ) : (
+                  <label>
+                    รายการนัด / อาการเบื้องต้น
+                    <input
+                      value={editing.complaint}
+                      onChange={(event) =>
+                        setEditing({
+                          ...editing,
+                          complaint: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                )}
               </fieldset>
               {!editable && (
                 <p className={styles.info}>
-                  ตัวอย่างนี้ให้เลื่อนหรือยกเลิกได้เฉพาะสถานะนัดหมาย (SCHEDULED)
+                  เลื่อนหรือยกเลิกจากหน้านี้ได้เมื่อมีสิทธิ์จัดการนัดหมายและสถานะเป็น
+                  SCHEDULED
                 </p>
               )}
               {formError && (
@@ -856,20 +1523,35 @@ export default function AppointmentTimelineMock() {
               )}
               <div className={styles.formActions}>
                 <button
+                  disabled={busy}
                   type="button"
                   className={styles.secondary}
-                  onClick={() => { if (exists) { setEditing({ ...appointments.find((item) => item.id === editing.id)! }); setDialogMode("DETAIL"); setFormError(""); } else closeDialog(); }}
+                  onClick={() => {
+                    if (exists) {
+                      setEditing({
+                        ...(appointments.find(
+                          (item) => item.id === editing.id,
+                        ) ?? editing),
+                      });
+                      setDialogMode("DETAIL");
+                      setFormError("");
+                    } else closeDialog();
+                  }}
                 >
                   {exists ? "กลับ" : "ปิด"}
                 </button>
                 {editable && (
-                  <button type="submit" className={styles.primary}>
+                  <button
+                    disabled={busy}
+                    type="submit"
+                    className={styles.primary}
+                  >
                     {exists ? "บันทึกการเลื่อนนัด" : "ตรวจสอบนัดหมาย"}
                   </button>
                 )}
               </div>
               <small className={styles.formDisclaimer}>
-                ข้อมูลนี้ไม่ถูกส่งไปยัง API และไม่ใช่การทดสอบสิทธิ์จริง
+                ระบบจะตรวจช่วงเวลาและสิทธิ์ซ้ำเมื่อกดยืนยัน
               </small>
             </form>
           )

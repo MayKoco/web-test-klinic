@@ -168,6 +168,7 @@ export default function PublicLanding() {
           firstName: draft.firstName.trim(),
           lastName: draft.lastName.trim(),
           ...(draft.phone.trim() ? { phone: draft.phone.trim() } : {}),
+          ...(new URLSearchParams(window.location.search).get("packageId") ? { packageId: new URLSearchParams(window.location.search).get("packageId") } : {}),
           acceptedTermsVersion: "2026-10-28",
         },
         setCurrentStep,
@@ -208,7 +209,7 @@ export default function PublicLanding() {
         </Link>
         <nav aria-label="เมนูเว็บไซต์">
           <a href="#features">จุดเด่น</a>
-          <a href="#pricing">แพ็กเกจ</a>
+          <a href="/subscription/plans">แพ็กเกจ</a>
           <Link className="public-nav-cta" href="/login">
             เข้าสู่ระบบคลินิก
           </Link>

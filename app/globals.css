@@ -1969,3 +1969,22 @@ input:focus,select:focus{border-color:#5c9af1;box-shadow:0 0 0 4px rgba(23,105,2
   .owner-purchase-plan input{top:19px;right:19px;}
   .owner-purchase-plan-inclusions{margin:15px 0;gap:6px;}
 }
+
+/* Owner invoice history and authenticated downloads. */
+.owner-invoices { padding:24px; border:1px solid #dce5ee; border-radius:20px; background:#fff; margin-top:24px; min-width:0; }
+.owner-invoices > header, .owner-invoice-modal header { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.owner-invoices h2 { font-size:20px; margin:4px 0 8px; }
+.owner-invoice-list { margin-top:16px; }
+.owner-invoice-list article { display:flex; align-items:center; gap:16px; border-top:1px solid #e8edf4; padding:16px 0; }
+.owner-invoice-detail { flex:1; min-width:0; display:grid; gap:5px; border:0; border-radius:12px; padding:12px; background:transparent; text-align:left; color:#17314b; cursor:pointer; }
+.owner-invoice-detail:hover, .owner-invoice-detail:focus-visible { background:#f0f6ff; }
+.owner-invoice-detail strong { color:#1764d9; }.owner-invoice-detail small { color:#6a7890; }
+.owner-invoice-detail em { font-style:normal; font-size:11px; border-radius:20px; padding:4px 8px; background:#e2f8ed; color:#08765a; }
+.owner-invoice-pages { display:flex; align-items:center; gap:12px; margin-top:16px; }
+.owner-invoice-modal { z-index:100; }.owner-invoice-modal .modal-box { max-width:680px; display:grid; gap:18px; }
+.owner-invoice-amount { font-size:28px; font-weight:800; }.owner-invoice-amount span { font-size:13px; color:#08765a; }
+@media(max-width:600px){.owner-invoices{padding:18px;}.owner-invoice-list article{align-items:stretch;flex-direction:column;gap:8px;}.owner-invoice-list article > button{width:100%;}}
+
+.owner-invoice-list article { position:relative; }
+.owner-invoice-detail::after { content:""; position:absolute; inset:0; cursor:pointer; border-radius:12px; }
+.owner-invoice-list article > .primary-button { position:relative; z-index:1; }

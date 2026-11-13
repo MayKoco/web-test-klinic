@@ -9,6 +9,8 @@ async function proxy(request: Request, context: RouteContext<"/api/clinic/[...pa
   const authorization = request.headers.get("authorization");
   const contentType = request.headers.get("content-type");
   const idempotencyKey = request.headers.get("idempotency-key");
+  const ticket = request.headers.get("x-subscription-ticket");
+  if (ticket) headers.set("X-Subscription-Ticket", ticket);
   const clinicSubdomain = clinicSubdomainFromHostname(incoming.hostname);
   if (authorization) headers.set("authorization", authorization);
   if (contentType) headers.set("content-type", contentType);
@@ -33,6 +35,12 @@ async function proxy(request: Request, context: RouteContext<"/api/clinic/[...pa
           "x-accel-buffering": "no",
         },
       });
+    }
+    if (upstreamContentType.startsWith("application/pdf")) {
+      return new Response(upstream.body, { status: upstream.status, headers: {
+        "content-type": "application/pdf", "content-disposition": upstream.headers.get("content-disposition") ?? "attachment",
+        "cache-control": "private, no-store", "x-content-type-options": "nosniff",
+      } });
     }
     return new Response(await upstream.text(), {
       status: upstream.status,

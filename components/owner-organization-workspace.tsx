@@ -1,9 +1,12 @@
 "use client";
 
+import { OwnerInvoices } from "./owner-invoices";
+
 import { useEffect, useMemo, useState } from "react";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
-import OwnerBranchPurchase, { returnedBranchOrganization } from "@/components/owner-branch-purchase";
+import { returnedBranchOrganization } from "@/components/owner-branch-purchase";
+import { OwnerBranchQuota } from "./owner-branch-quota";
 import { ClinicLoginResult, ClinicSessionProfile } from "@/lib/clinic-session";
 import { clearOwnerSession, OwnerSession, readOwnerSession, renewOwnerSession } from "@/lib/owner-session";
 
@@ -28,7 +31,7 @@ export default function OwnerOrganizationWorkspace() {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState("");
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [showForm, setShowForm] = useState(false);
+
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -71,7 +74,7 @@ export default function OwnerOrganizationWorkspace() {
       setOrganizations(organizationResult.data);
       const returned = organizationResult.data.find((organization) => organization.id === returnedOrganization);
       const organizationId = returned?.id ?? organizationResult.data[0]?.id ?? "";
-      if (returned) setShowForm(true);
+
       setSelectedOrganizationId(organizationId);
       if (organizationId) {
         const branchResult = await apiRequest<Branch[]>(`/owner/organizations/${encodeURIComponent(organizationId)}/branches?limit=100&sortBy=name&sortOrder=asc`, { token: session.accessToken });
@@ -113,7 +116,7 @@ export default function OwnerOrganizationWorkspace() {
   return <main className="app-shell owner-organization-app">
     <AppSidebar active="organization" profile={profile} />
     <section className="workspace">
-      <header className="topbar owner-organization-topbar"><div><p className="eyebrow">OWNER WORKSPACE</p><h1>องค์กรและสาขา</h1></div>{access === "owner" && <button className="owner-create-branch" type="button" onClick={() => setShowForm(true)}><span>＋</span> เปิดสาขาใหม่</button>}</header>
+      <header className="topbar owner-organization-topbar"><div><p className="eyebrow">OWNER WORKSPACE</p><h1>องค์กรและสาขา</h1></div></header>
       <div className="content owner-organization-content">
         {access === "loading" && <section className="owner-state-card"><span className="owner-state-spinner" /><h2>กำลังตรวจสอบ Global Owner</h2></section>}
         {access === "forbidden" && <section className="owner-state-card forbidden"><span>⌁</span><p className="eyebrow">GLOBAL OWNER ONLY</p><h2>ไม่สามารถเปิด Owner workspace</h2><p>{error}</p><a href="/login">เข้าสู่ระบบใหม่</a></section>}
@@ -124,19 +127,14 @@ export default function OwnerOrganizationWorkspace() {
           {organizations.length > 1 && <div className="owner-org-switcher"><label>Organization<select value={selectedOrganizationId} onChange={(event) => void loadBranches(event.target.value)}>{organizations.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>}
           <section className="owner-branch-section"><header><div><p className="eyebrow">BRANCH DIRECTORY</p><h2>สาขาของคุณ</h2><p>เลือกสาขาเพื่อแลก Owner session เป็น Clinic token ใหม่</p></div><span>{branches.length} สาขา</span></header><div className="owner-branch-cards">
             {branches.map((branch) => { const current = branch.code === profile?.clinicCode; return <article key={branch.clinicId} className={current ? "current" : ""}><div className="owner-branch-card-head"><span>{branch.name.slice(0, 1).toUpperCase()}</span><i>{current ? "สาขาปัจจุบัน" : branch.provisioningStatus}</i></div><h3>{branch.name}</h3><p>Clinic code <b>{branch.code}</b></p><div className="owner-branch-card-foot"><span><i /> {branch.accessStatus}</span><button type="button" disabled={busy || current || branch.provisioningStatus !== "READY"} onClick={() => void switchClinic(branch.clinicId, branch.code)}>{current ? "กำลังใช้งาน" : "เข้าสู่สาขา"}</button></div></article>; })}
-            <button className="owner-add-branch-card" type="button" onClick={() => setShowForm(true)}><span>＋</span><b>เพิ่มสาขาใหม่</b><small>ใช้ Owner และ Organization เดิม</small></button>
+
           </div></section>
+          {ownerSession && selectedOrganizationId && <OwnerBranchQuota key={`quota:${selectedOrganizationId}`} token={ownerSession.accessToken} organizationId={selectedOrganizationId} onChanged={() => { void loadBranches(selectedOrganizationId); }}/>}
+          {ownerSession && selectedOrganizationId && <OwnerInvoices key={selectedOrganizationId} token={ownerSession.accessToken} organizationId={selectedOrganizationId}/>}
           <aside className="owner-flow-note"><span>i</span><div><b>Token boundary</b><p>Owner token ใช้จัดการ Organization ส่วน Clinic token ใช้งานเฉพาะสาขาปัจจุบัน การสลับสาขาจะออก Clinic token ใหม่ทุกครั้ง</p></div></aside>
         </>}
       </div>
     </section>
-    {showForm && ownerSession && selectedOrganization && <OwnerBranchPurchase
-      key={selectedOrganization.id}
-      token={ownerSession.accessToken}
-      organization={selectedOrganization}
-      onClose={() => setShowForm(false)}
-      onReady={() => { setNotice("สาขาใหม่พร้อมใช้งานแล้ว"); void loadBranches(selectedOrganization.id); }}
-      onEnter={(clinicId, code) => void switchClinic(clinicId, code)}
-    />}
+
   </main>;
 }

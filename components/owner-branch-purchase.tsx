@@ -1,5 +1,7 @@
 "use client";
 
+import { OwnerInvoices } from "./owner-invoices";
+
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { ApiClientError, apiRequest } from "@/lib/api";
 import { createClientId } from "@/lib/client-id";
@@ -225,6 +227,7 @@ export default function OwnerBranchPurchase({
         </>}
         {error && <p className="notice error" role="alert">{error}</p>}
       </div>
+      {checkoutId && order?.paidAt && <OwnerInvoices token={token} organizationId={organization.id} checkoutId={checkoutId}/>}
       <footer>
         {choosingPackage && selected && <p className="owner-purchase-selection" role="status">
           <span>แพ็กเกจที่เลือก · {selected.subscriptionDays} วัน</span>
@@ -235,7 +238,7 @@ export default function OwnerBranchPurchase({
         {choosingPackage && !!packages?.length && <button type="button" className="primary-button" disabled={!selected} onClick={() => setShowBranchDetails(true)}>ถัดไป <span aria-hidden="true">→</span></button>}
         {selected && !choosingPackage && !checkoutId && <button className="primary-button" disabled={busy}>{busy ? "กำลังเปิด Stripe…" : "ดำเนินการชำระเงิน"}</button>}
         {checkoutId && order?.status !== "READY" && order?.status !== "EXPIRED" && <button type="button" className="ghost-button" onClick={() => setReload((value) => value + 1)}>ตรวจสอบสถานะ</button>}
-        {order?.status === "PENDING" && order.checkoutUrl && <a className="primary-button" href={order.checkoutUrl}>กลับไปชำระเงิน</a>}
+        {!error && order?.status === "PENDING" && order.checkoutUrl && <a className="primary-button" href={order.checkoutUrl}>กลับไปชำระเงิน</a>}
         {(orderMissing || order?.status === "EXPIRED") && <button type="button" className="primary-button" onClick={clearOrder}>เริ่มรายการใหม่</button>}
         {order?.status === "READY" && order.clinicId && onEnter && <button type="button" className="primary-button" onClick={() => onEnter(order.clinicId!, order.code)}>เข้าสู่สาขา</button>}
         {!checkoutId && !packages && error && <button type="button" className="primary-button" onClick={() => { setError(""); setReload((value) => value + 1); }}>โหลดแพ็กเกจใหม่</button>}

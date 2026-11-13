@@ -19,7 +19,7 @@ type MenuItem = {
 };
 
 const groups: Array<{ label: string; ownerOnly?: boolean; items: MenuItem[] }> = [
-  { label: "Design lab", items: [{ id: "timeline-mock", href: "/appointments/mock", icon: "▦", label: "นัดหมาย · Mock design" }] },
+  { label: "Design lab", items: [{ id: "timeline-mock", href: "/appointments/mock", icon: "▦", label: "นัดหมาย · Timeline API" }] },
   {
     label: "ภาพรวมและบริการ",
     items: [
