@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import UndoCheckInDialog from "@/components/undo-check-in-dialog";
 import NormalWalkInDialog from "@/components/normal-walk-in-dialog";
 import AppSidebar from "@/components/app-sidebar";
 import { ApiClientError, apiRequest } from "@/lib/api";
@@ -299,6 +300,10 @@ export default function QueueBoard() {
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
   const [usageConfirmation, setUsageConfirmation] = useState<UsageConfirmationData | null>(null);
   const [checkInCard, setCheckInCard] = useState<BoardCard | null>(null);
+  const [undoStartCard, setUndoStartCard] = useState<BoardCard | null>(null);
+  const [clinicalDoctorId, setClinicalDoctorId] = useState<string | null>(null);
+  const [undoCheckInCard, setUndoCheckInCard] = useState<BoardCard | null>(null);
+  const [canUndoCheckIn, setCanUndoCheckIn] = useState(false);
   const [walkInOpen, setWalkInOpen] = useState(false);
   const [canBookWalkIn, setCanBookWalkIn] = useState(false);
   const [urgentOpen, setUrgentOpen] = useState(false);
@@ -331,9 +336,11 @@ export default function QueueBoard() {
         setDoctors(doctorResponse.data);
       } catch { setDoctors([]); }
       try {
-        const result = await apiRequest<{ permissions: string[] }>("/auth/me/permissions", { token: savedToken });
+        const result = await apiRequest<{ permissions: string[]; doctorId?: string | null }>("/auth/me/permissions", { token: savedToken });
+        setClinicalDoctorId(["QUEUE_VIEW", "APPOINTMENT_START", "APPOINTMENT_FINISH"].every(code => result.data.permissions.includes(code)) ? result.data.doctorId ?? null : null);
+        setCanUndoCheckIn(["QUEUE_VIEW", "QUEUE_MANAGE", "APPOINTMENT_CHECK_IN", "APPOINTMENT_COMPLETE"].every(code => result.data.permissions.includes(code)));
         setCanBookWalkIn(["APPOINTMENT_VIEW", "APPOINTMENT_CREATE", "APPOINTMENT_UPDATE", "APPOINTMENT_CANCEL", "APPOINTMENT_ITEM_MANAGE", "PATIENT_VIEW", "PATIENT_CREATE", "PATIENT_UPDATE"].every(code => result.data.permissions.includes(code)));
-      } catch { setCanBookWalkIn(false); }
+      } catch { setCanBookWalkIn(false); setCanUndoCheckIn(false); setClinicalDoctorId(null); }
       await loadBoard(savedToken, localDate());
     });
   }, [loadBoard]);
@@ -730,6 +737,8 @@ export default function QueueBoard() {
                       card={card}
                       now={now}
                       busy={Boolean(busy)}
+                      onUndoStart={clinicalDoctorId && card.doctor.id === clinicalDoctorId && card.status === "IN_PROGRESS" && !card.treatmentRecorded ? () => setUndoStartCard(card) : undefined}
+                      onUndoCheckIn={canUndoCheckIn && card.status === "WAITING" ? () => setUndoCheckInCard(card) : undefined}
                       onDetails={() => void openDetails(card)}
                       onAction={action => void runAction(card, action)}
                       onTreatment={() => void openTreatment(card)}
@@ -760,6 +769,26 @@ export default function QueueBoard() {
           cancel={() => void cancelAppointment(selected)}
         />
       )}
+      {undoStartCard && <UndoCheckInDialog
+        key={`start-${undoStartCard.appointmentId}`} mode="START"
+        card={undoStartCard} token={token} close={() => setUndoStartCard(null)}
+        refresh={() => loadBoard(token, date, doctorId, search, true)}
+        completed={async () => {
+          setUndoStartCard(null);
+          setNotice({ kind: "success", text: "ย้อนกลับเป็นรอรักษาแล้ว พร้อมบันทึกเหตุผลและแพทย์ผู้ดำเนินการ" });
+          await loadBoard(token, date, doctorId, search, true);
+        }}
+      />}
+      {undoCheckInCard && <UndoCheckInDialog
+        key={undoCheckInCard.appointmentId}
+        card={undoCheckInCard} token={token} close={() => setUndoCheckInCard(null)}
+        refresh={() => loadBoard(token, date, doctorId, search, true)}
+        completed={async () => {
+          setUndoCheckInCard(null);
+          setNotice({ kind: "success", text: "ย้อนกลับเป็นรอ Check-in แล้ว พร้อมบันทึกเหตุผลและผู้ดำเนินการ" });
+          await loadBoard(token, date, doctorId, search, true);
+        }}
+      />}
       {checkInCard && <CheckInDialog
         card={checkInCard}
         appointmentDate={date}
@@ -947,8 +976,8 @@ function urgentWarningLabel(code: string) {
   } as Record<string, string>)[code] ?? code;
 }
 
-function QueueCard({ card, now, busy, onDetails, onAction, onTreatment, onHistory, onEntitlement, onPayment, onReceipt, onUsageConfirmation }: {
-  card: BoardCard; now: number; busy: boolean; onDetails: () => void;
+function QueueCard({ card, now, busy, onUndoStart, onUndoCheckIn, onDetails, onAction, onTreatment, onHistory, onEntitlement, onPayment, onReceipt, onUsageConfirmation }: {
+  card: BoardCard; now: number; busy: boolean; onDetails: () => void; onUndoCheckIn?: () => void; onUndoStart?: () => void;
   onAction: (action: Exclude<BoardAction, "CANCEL">) => void;
   onTreatment: () => void; onHistory: () => void; onEntitlement: () => void; onPayment: () => void; onReceipt: () => void; onUsageConfirmation: () => void;
 }) {
@@ -971,6 +1000,8 @@ function QueueCard({ card, now, busy, onDetails, onAction, onTreatment, onHistor
       {!!card.blockingReasons.length && <div className="blocker-list">{card.blockingReasons.map(reason => <small key={reason}>{blockerLabel(reason)}</small>)}</div>}
       <div className="queue-card-actions">
         <button className="soft-button" onClick={onDetails}>รายละเอียด</button>
+        {card.status === "IN_PROGRESS" && !card.treatmentRecorded && onUndoStart && <button className="soft-button" disabled={busy} onClick={onUndoStart}>ย้อนกลับรอรักษา</button>}
+        {card.status === "WAITING" && onUndoCheckIn && <button className="soft-button" disabled={busy} onClick={onUndoCheckIn}>ย้อนกลับรอ Check-in</button>}
         {card.status === "IN_PROGRESS" && !card.treatmentRecorded && <button className="soft-button" onClick={onTreatment}>บันทึก</button>}
         {card.treatmentRecorded && <button className="soft-button" onClick={onHistory}>ผลรักษา / เวอร์ชัน</button>}
         {card.blockingReasons.includes("TREATMENT_REQUIRED") && <button className="primary-action" onClick={onTreatment}>บันทึกการรักษา</button>}

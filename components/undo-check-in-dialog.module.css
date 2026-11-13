@@ -1,0 +1,22 @@
+.dialog {
+  width: min(540px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: #fff;
+  color: #26364c;
+  overflow-y: auto;
+}
+.dialog::backdrop {
+  background: rgb(10 22 42 / 45%);
+  backdrop-filter: blur(3px);
+}
+.form { width: 100%; box-sizing: border-box; }
+.form label { display: grid; gap: 8px; }
+.form textarea { width: 100%; box-sizing: border-box; font: inherit; }
+.form footer { flex-wrap: wrap; }
+.context { margin: 0; line-height: 1.7; }
+.error { margin: 0; color: #b3293c; }

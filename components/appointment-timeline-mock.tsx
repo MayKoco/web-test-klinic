@@ -1013,6 +1013,8 @@ export default function AppointmentTimeline({
                             appointment.endTime,
                             scale,
                           ),
+                          // Visual gap only; preserve the exact booking start/end.
+                          width: Math.max(1, (duration(appointment) * scale) / 60 - 4),
                           top: 34 + lane * 94,
                         }}
                         title={`${appointment.patient} · ${appointment.startTime}–${appointment.endTime} · ${appointment.complaint}`}
@@ -1023,10 +1025,8 @@ export default function AppointmentTimeline({
                           <b>{appointment.patient}</b>
                           <i aria-hidden="true">↗</i>
                         </span>
-                        <span className={styles.cardTime}>
-                          <span>{appointment.startTime}</span>
-                          <span className={styles.timeSeparator}>–</span>
-                          <span>{appointment.endTime}</span>
+                        <span className={styles.cardTime} title={`${appointment.startTime}–${appointment.endTime}`}>
+                          {appointment.startTime}–{appointment.endTime}
                         </span>
                         <span className={styles.cardComplaint}>
                           {appointment.complaint}
