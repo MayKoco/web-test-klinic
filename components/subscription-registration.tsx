@@ -127,6 +127,25 @@ function Field({
   );
 }
 
+const CLINIC_BASE_DOMAIN = process.env.NEXT_PUBLIC_CLINIC_BASE_DOMAIN?.trim() || "lvh.me";
+// Match the public checkout DTO and reserved names enforced by the API.
+const SUBDOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/;
+const RESERVED_SUBDOMAINS = new Set(["www", "api", "app", "admin", "platform", "support", "status", "mail"]);
+
+function organizationSlug(name: string) {
+  return name.toLowerCase().normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 63)
+    .replace(/-+$/g, "");
+}
+
+function withRandomSuffix(slug: string) {
+  const suffix = Math.random().toString(36).slice(2, 8).padEnd(6, "0");
+  return `${(slug || "clinic").slice(0, 56).replace(/-+$/g, "")}-${suffix}`;
+}
+
 export function SubscriptionRegistration({
   plan,
   apiBase,
@@ -156,9 +175,21 @@ export function SubscriptionRegistration({
   const [sameEmail, setSameEmail] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [customSubdomain, setCustomSubdomain] = useState<string | null>(null);
+  const [fallbackSubdomain, setFallbackSubdomain] = useState("");
+  const [subdomainAlternative, setSubdomainAlternative] = useState("");
+  const [subdomainError, setSubdomainError] = useState("");
+  const [domainCheck, setDomainCheck] = useState<{
+    name: string;
+    status: "available" | "taken" | "unreachable";
+  } | null>(null);
   const requestKey = useRef("");
   const submitting = useRef(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const subdomainInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (subdomainError && !busy) subdomainInputRef.current?.focus();
+  }, [subdomainError, busy]);
   useEffect(() => {
     if (variant !== "dialog") return;
     const dialog = dialogRef.current;
@@ -180,7 +211,61 @@ export function SubscriptionRegistration({
   const money = (value: number) =>
     new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 }).format(value);
   const amount = Number(plan.price);
+  const slug = organizationSlug(form.clinicName);
+  const suggestedSubdomain = !form.clinicName.trim()
+    ? ""
+    : SUBDOMAIN_PATTERN.test(slug) && !RESERVED_SUBDOMAINS.has(slug)
+      ? slug
+      : fallbackSubdomain;
+  const subdomain = customSubdomain ?? suggestedSubdomain;
+  const validSubdomain = SUBDOMAIN_PATTERN.test(subdomain) && !RESERVED_SUBDOMAINS.has(subdomain);
+
+  const availability = validSubdomain
+    ? domainCheck?.name === subdomain ? domainCheck.status : "checking"
+    : null;
+
+  useEffect(() => {
+    if (!validSubdomain) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `${apiBase}/subscription-orders/availability/${encodeURIComponent(subdomain)}`,
+          { signal: controller.signal, cache: "no-store" },
+        );
+        const result = await response.json();
+        if (!response.ok || !result.success || typeof result.data?.available !== "boolean") {
+          throw new Error("Invalid availability response");
+        }
+        if (!controller.signal.aborted) {
+          setDomainCheck({ name: subdomain, status: result.data.available ? "available" : "taken" });
+        }
+      } catch {
+        if (!controller.signal.aborted) setDomainCheck({ name: subdomain, status: "unreachable" });
+      }
+    }, 350);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [apiBase, subdomain, validSubdomain]);
+
+  function changeSubdomain(value: string) {
+    setCustomSubdomain(value.toLowerCase());
+    setSubdomainAlternative("");
+    setSubdomainError("");
+    requestKey.current = "";
+  }
+
   function changeOwner(key: keyof typeof form, value: string) {
+    if (key === "clinicName" && customSubdomain === null) {
+      const nextSlug = organizationSlug(value);
+      if (value.trim() && (!SUBDOMAIN_PATTERN.test(nextSlug) || RESERVED_SUBDOMAINS.has(nextSlug)) && !fallbackSubdomain) {
+        setFallbackSubdomain(withRandomSuffix("clinic"));
+      }
+      setSubdomainAlternative("");
+      setSubdomainError("");
+    }
     setForm((current) => ({ ...current, [key]: value }));
     requestKey.current = "";
   }
@@ -190,13 +275,18 @@ export function SubscriptionRegistration({
   }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting.current) return;
+    if (submitting.current || availability === "checking" || availability === "taken") return;
+    if (!validSubdomain) {
+      setSubdomainError(RESERVED_SUBDOMAINS.has(subdomain)
+        ? "ชื่อนี้สงวนไว้ กรุณาเลือกชื่อ URL อื่น"
+        : "ใช้ a–z, 0–9 และขีดกลาง ยาว 1 ตัวหรือ 3–63 ตัว และห้ามขึ้นต้นหรือลงท้ายด้วยขีดกลาง");
+      return;
+    }
     submitting.current = true;
     setBusy(true);
     setError("");
     if (!requestKey.current)
       requestKey.current = `request-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-    const subdomain = `clinic-${requestKey.current.replace(/[^a-z0-9]/g, "").slice(-18)}`;
     try {
       const response = await fetch(`${apiBase}/subscription-orders`, {
         method: "POST",
@@ -215,11 +305,18 @@ export function SubscriptionRegistration({
         }),
       });
       const result = await response.json();
+      if (result.error?.code === "SUBDOMAIN_ALREADY_EXISTS") {
+        setDomainCheck({ name: subdomain, status: "taken" });
+        setSubdomainError("URL นี้ถูกใช้หรือจองแล้ว กรุณาเลือกชื่ออื่น");
+        setSubdomainAlternative(withRandomSuffix(slug || subdomain));
+        return;
+      }
       if (!response.ok || !result.success || !result.data?.ticketUrl)
         throw new Error(result.message || "ส่งคำขอไม่สำเร็จ กรุณาลองอีกครั้ง");
       window.location.assign(result.data.ticketUrl);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "ส่งคำขอไม่สำเร็จ");
+    } finally {
       setBusy(false);
       submitting.current = false;
     }
@@ -371,6 +468,40 @@ export function SubscriptionRegistration({
                     onChange={(e) => changeOwner("branchName", e.target.value)}
                   />
                 </Field>
+              </div>
+              <div>
+                <Field id="subscription-subdomain" label="URL เข้าใช้งานขององค์กร" required icon="link">
+                  <input
+                    id="subscription-subdomain"
+                    ref={subdomainInputRef}
+                    required
+                    maxLength={63}
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    placeholder="เช่น kk-wellness"
+                    value={subdomain}
+                    aria-invalid={Boolean(subdomainError) || availability === "taken"}
+                    aria-describedby={`subscription-domain-preview subscription-domain-status${subdomainError ? " subscription-domain-error" : ""}`}
+                    onChange={(event) => changeSubdomain(event.target.value)}
+                  />
+                </Field>
+                <p id="subscription-domain-preview" className={styles.domainPreview}>
+                  <strong>{validSubdomain ? `${subdomain}.${CLINIC_BASE_DOMAIN}` : `ชื่อองค์กร.${CLINIC_BASE_DOMAIN}`}</strong>
+                  {" · ทุกสาขาใช้งานผ่าน URL นี้"}
+                </p>
+                <div id="subscription-domain-status" role="status">
+                  {availability === "checking" && <p className={styles.domainPreview}>กำลังตรวจสอบ URL…</p>}
+                  {availability === "available" && <p className={styles.domainAvailable}>URL นี้ว่าง</p>}
+                  {availability === "taken" && !subdomainError && <p className={styles.domainError}>URL นี้ถูกใช้หรือจองแล้ว กรุณาเลือกชื่ออื่น</p>}
+                  {availability === "unreachable" && <p className={styles.domainPreview}>ตรวจ URL ล่วงหน้าไม่ได้ ระบบจะตรวจอีกครั้งเมื่อส่งคำขอ</p>}
+                </div>
+                {subdomainError && <p id="subscription-domain-error" className={styles.domainError} role="alert">{subdomainError}</p>}
+                {(subdomainAlternative || availability === "taken") && (
+                  <button type="button" className={styles.domainAlternative} onClick={() => changeSubdomain(subdomainAlternative || withRandomSuffix(slug || subdomain))}>
+                    {subdomainAlternative ? `ใช้ ${subdomainAlternative}.${CLINIC_BASE_DOMAIN}` : "ลองชื่อที่เติมรหัสท้าย"}
+                  </button>
+                )}
               </div>
               <div className={styles.pair}>
                 <Field
@@ -572,7 +703,7 @@ export function SubscriptionRegistration({
               >
                 ยกเลิก
               </button>
-              <button className={styles.submit} disabled={busy}>
+              <button className={styles.submit} disabled={busy || availability === "checking" || availability === "taken"}>
                 {busy ? "กำลังส่งคำขอ…" : "ส่งคำขอสมัคร"}
                 <Icon name="arrow" />
               </button>
