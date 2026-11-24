@@ -39,15 +39,95 @@ export function returnedBranchOrganization() {
   return new URLSearchParams(window.location.search).get("organizationId");
 }
 
-export default function OwnerBranchPurchase({
-  token, organization, onClose, onReady, onEnter,
-}: {
+type BranchDialogProps = {
   token: string;
   organization: { id: string; name: string };
   onClose: () => void;
   onReady: () => void;
   onEnter?: (clinicId: string, code: string) => void;
-}) {
+};
+
+export default function OwnerBranchPurchase(props: BranchDialogProps) {
+  const query = new URLSearchParams(window.location.search);
+  const returned = query.get("organizationId") === props.organization.id && query.has("checkoutId");
+  const pending = window.localStorage.getItem(`klinic-branch-checkout:${props.organization.id}`);
+  return returned || pending
+    ? <LegacyBranchCheckout {...props} />
+    : <IncludedBranchDialog {...props} />;
+}
+
+function IncludedBranchDialog({ token, organization, onClose, onReady, onEnter }: BranchDialogProps) {
+  type Capacity = { used: number; limit: number | null; remaining: number | null; canCreate: boolean; packageName: string | null; expiresAt: string | null };
+  type Branch = { clinicId: string; code: string; name: string; provisioningStatus: string };
+  const [capacity, setCapacity] = useState<Capacity | null>(null);
+  const [created, setCreated] = useState<Branch | null>(null);
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const request = useRef<{ name: string; key: string } | null>(null);
+  const base = `/owner/organizations/${encodeURIComponent(organization.id)}`;
+  useEffect(() => {
+    const controller = new AbortController();
+    apiRequest<Capacity>(`${base}/branch-capacity`, { token, signal: controller.signal })
+      .then(({ data }) => setCapacity(data))
+      .catch((cause: unknown) => { if (!controller.signal.aborted) setError(errorText(cause)); });
+    return () => controller.abort();
+  }, [base, token]);
+
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (saving || created || !capacity?.canCreate || !name.trim()) return;
+    const branchName = name.trim();
+    if (request.current?.name !== branchName) request.current = { name: branchName, key: createClientId() };
+    setSaving(true);
+    setError("");
+    try {
+      const { data } = await apiRequest<Branch>(`${base}/branches`, {
+        method: "POST", token, headers: { "Idempotency-Key": request.current.key },
+        body: JSON.stringify({ name: branchName }),
+      });
+      setCreated(data);
+      if (data.provisioningStatus === "READY") onReady();
+    } catch (cause) {
+      setError(cause instanceof ApiClientError && cause.code === "PACKAGE_BRANCH_LIMIT_REACHED"
+        ? "องค์กรเปิดสาขาครบตามโควตาของแพ็กเกจแล้ว" : errorText(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="modal-backdrop owner-branch-modal" role="presentation">
+    <form role="dialog" aria-modal="true" aria-labelledby="included-branch-title" className="modal-box owner-inline-branch-form owner-purchase" onSubmit={create}>
+      <header><div><h2 id="included-branch-title">เปิดสาขาใหม่</h2><p>{organization.name}</p></div>
+        <button type="button" onClick={onClose} disabled={saving} aria-label="ปิด">×</button></header>
+      <div className="owner-purchase-body">
+        {created ? <p role="status">{created.provisioningStatus === "READY"
+          ? `${created.name} พร้อมใช้งานแล้ว`
+          : created.provisioningStatus === "FAILED"
+            ? "สร้างสาขาไม่สำเร็จ กรุณาติดต่อทีมดูแลเพื่อดำเนินการต่อ"
+            : "ระบบกำลังเตรียมสาขา กรุณากลับมาตรวจในรายการสาขา"}</p>
+          : <>
+            {capacity && <aside className="owner-purchase-order-summary">
+              <span>{capacity.packageName ?? "แพ็กเกจขององค์กร"}</span>
+              <div><span>ใช้ไป {capacity.used} สาขา</span><strong>{capacity.limit === null ? "ไม่จำกัด" : `สูงสุด ${capacity.limit} สาขา`}</strong></div>
+            </aside>}
+            {!capacity && !error && <p role="status">กำลังตรวจสิทธิ์เปิดสาขา…</p>}
+            {capacity?.canCreate ? <div className="owner-purchase-details"><div className="owner-inline-fields">
+              <label>ชื่อสาขา<input value={name} onChange={(event) => setName(event.target.value)} required maxLength={200} placeholder="เช่น สาขาทองหล่อ" disabled={saving} /></label>
+              <p>ใช้สิทธิ์จากแพ็กเกจเดิม เปิดสาขาได้โดยไม่ต้องชำระเพิ่ม</p>
+            </div></div> : capacity && <p>{capacity.remaining === 0 && capacity.packageName ? "องค์กรเปิดสาขาครบตามโควตาของแพ็กเกจแล้ว" : "ต้องมีแพ็กเกจที่ยังใช้งานได้เพื่อเปิดสาขาเพิ่ม"}</p>}
+          </>}
+        {error && <p className="notice error" role="alert">{error}</p>}
+      </div>
+      <footer><div><button type="button" className="ghost-button" disabled={saving} onClick={onClose}>ปิด</button>
+        {!created && capacity?.canCreate && <button className="primary-button" disabled={saving || !name.trim()}>{saving ? "กำลังเปิดสาขา…" : "ยืนยันเปิดสาขา"}</button>}
+        {created?.provisioningStatus === "READY" && onEnter && <button type="button" className="primary-button" onClick={() => onEnter(created.clinicId, created.code)}>เข้าสู่สาขา</button>}
+      </div></footer>
+    </form>
+  </div>;
+}
+
+function LegacyBranchCheckout({ token, organization, onClose, onReady, onEnter }: BranchDialogProps) {
   const storageKey = `klinic-branch-checkout:${organization.id}`;
   const draftKey = `${storageKey}:draft`;
   const [savedDraft, setSavedDraft] = useState(() => readPurchaseDraft(draftKey));
@@ -238,8 +318,8 @@ export default function OwnerBranchPurchase({
         {choosingPackage && !!packages?.length && <button type="button" className="primary-button" disabled={!selected} onClick={() => setShowBranchDetails(true)}>ถัดไป <span aria-hidden="true">→</span></button>}
         {selected && !choosingPackage && !checkoutId && <button className="primary-button" disabled={busy}>{busy ? "กำลังเปิด Stripe…" : "ดำเนินการชำระเงิน"}</button>}
         {checkoutId && order?.status !== "READY" && order?.status !== "EXPIRED" && <button type="button" className="ghost-button" onClick={() => setReload((value) => value + 1)}>ตรวจสอบสถานะ</button>}
-        {!error && order?.status === "PENDING" && order.checkoutUrl && <a className="primary-button" href={order.checkoutUrl}>กลับไปชำระเงิน</a>}
-        {(orderMissing || order?.status === "EXPIRED") && <button type="button" className="primary-button" onClick={clearOrder}>เริ่มรายการใหม่</button>}
+        {order?.status === "PENDING" && order.checkoutUrl && <a className="primary-button" href={order.checkoutUrl}>กลับไปชำระเงิน</a>}
+        {(orderMissing || order?.status === "EXPIRED") && <button type="button" className="primary-button" onClick={() => { clearOrder(); onClose(); }}>กลับไปเปิดสาขา</button>}
         {order?.status === "READY" && order.clinicId && onEnter && <button type="button" className="primary-button" onClick={() => onEnter(order.clinicId!, order.code)}>เข้าสู่สาขา</button>}
         {!checkoutId && !packages && error && <button type="button" className="primary-button" onClick={() => { setError(""); setReload((value) => value + 1); }}>โหลดแพ็กเกจใหม่</button>}
       </div></footer>
