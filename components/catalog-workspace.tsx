@@ -36,6 +36,7 @@ type Item = {
   finalPrice: string;
   priceIncludesVat?: boolean;
   taxBreakdown?: TaxBreakdown | null;
+  feeBreakdown?: { serviceFee: string; procedureFee: string; products: string } | null;
   status: "DRAFT" | "ACTIVE" | "INACTIVE";
   productDetail?: {
     unit: string;
@@ -204,6 +205,7 @@ type Draft = {
   name: string;
   description: string;
   basePrice: string;
+  procedureFee: string;
   discountType: DType;
   discountValue: string;
   unit: string;
@@ -268,6 +270,7 @@ const blank: Draft = {
   name: "",
   description: "",
   basePrice: "",
+  procedureFee: "",
   discountType: "NONE",
   discountValue: "0",
   unit: "ชิ้น",
@@ -499,26 +502,18 @@ export default function CatalogWorkspace() {
       draft.type === "COURSE"
         ? productsPerUse * Number(draft.sessionCount || 0)
         : productsPerUse;
-    const procedure = Number(draft.basePrice || 0);
-    const base = procedure + productsTotal;
-    const discount = 0;
-    const final = base;
-    const nonTaxable =
-      draft.type === "PRODUCT"
-        ? 0
-        : base
-          ? Math.round(((final * procedure) / base) * 100) / 100
-          : 0;
-    const taxableGross = final - nonTaxable;
+    const primary = Number(draft.basePrice || 0);
+    const isProduct = draft.type === "PRODUCT";
+    const serviceFee = isProduct ? 0 : primary;
+    const procedureFee = isProduct ? 0 : Number(draft.procedureFee || 0);
+    const taxableGross = isProduct ? primary : productsTotal;
     const vat = Math.round(((taxableGross * 7) / 107) * 100) / 100;
     return {
-      base,
-      discount,
-      final,
-      nonTaxable,
+      final: serviceFee + procedureFee + taxableGross,
+      serviceFee,
+      procedureFee,
       taxable: taxableGross - vat,
       vat,
-      taxableGross,
     };
   }, [draft, newServiceProducts]);
   const action = async (
@@ -622,7 +617,12 @@ export default function CatalogWorkspace() {
       code: draft.code,
       name: draft.name,
       description: draft.description || undefined,
-      basePrice: Number(draft.basePrice),
+      ...(t === "PRODUCT"
+        ? { basePrice: Number(draft.basePrice) }
+        : {
+            serviceFee: Number(draft.basePrice),
+            procedureFee: draft.procedureFee === "" ? undefined : Number(draft.procedureFee),
+          }),
     };
     const optional = (value: string) => value.trim() || undefined;
     const sharedProductDetail = {
@@ -1630,7 +1630,7 @@ export default function CatalogWorkspace() {
                         onChange={setNewServiceProducts}
                       />
                     )}
-                    <TaxPricePreview price={price} />
+                    <TaxPricePreview price={price} showFees={draft.type !== "PRODUCT"} />
                     <label className="catalog-check">
                       <input
                         type="checkbox"
@@ -2604,8 +2604,8 @@ function PriceFields({
     draft.type === "PRODUCT"
       ? "ราคาขาย (รวม VAT 7%)"
       : draft.type === "SERVICE"
-        ? "ค่าหัตถการ (ไม่คิด VAT)"
-        : "ค่าหัตถการทั้งคอร์ส (ไม่คิด VAT)";
+        ? "ค่าบริการต่อครั้ง (ไม่คิด VAT)"
+        : "ค่าบริการทั้งคอร์ส (ไม่คิด VAT)";
   return (
     <>
       <Field label={label}>
@@ -2620,6 +2620,20 @@ function PriceFields({
           required
         />
       </Field>
+      {draft.type !== "PRODUCT" && (
+        <Field label={draft.type === "COURSE" ? "ค่าหัตถการทั้งคอร์ส (ถ้ามี)" : "ค่าหัตถการต่อครั้ง (ถ้ามี)"}>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="0.00"
+            value={draft.procedureFee}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, procedureFee: event.target.value }))
+            }
+          />
+        </Field>
+      )}
       <p className="promotion-help">
         ส่วนลดไม่ผูกกับ Master Data — ไปกำหนดสินค้าและช่วงเวลาใน Promotion
       </p>
@@ -2828,15 +2842,16 @@ function ProductDescriptionFields({
 }
 function TaxPricePreview({
   price,
+  showFees,
 }: {
   price: {
-    base: number;
-    discount: number;
     final: number;
-    nonTaxable: number;
+    serviceFee: number;
+    procedureFee: number;
     taxable: number;
     vat: number;
   };
+  showFees: boolean;
 }) {
   return (
     <div className="tax-price-preview">
@@ -2844,10 +2859,18 @@ function TaxPricePreview({
         <span>สรุปราคา</span>
         <small>ราคาสินค้ารวม VAT แล้ว</small>
       </div>
-      <div className="tax-preview-row">
-        <span>ค่าหัตถการ ไม่คิด VAT</span>
-        <b>{money(price.nonTaxable)}</b>
-      </div>
+      {showFees && (
+        <>
+          <div className="tax-preview-row">
+            <span>ค่าบริการ</span>
+            <b>{money(price.serviceFee)}</b>
+          </div>
+          <div className="tax-preview-row">
+            <span>ค่าหัตถการ</span>
+            <b>{money(price.procedureFee)}</b>
+          </div>
+        </>
+      )}
       <div className="tax-preview-row">
         <span>มูลค่าสินค้าก่อน VAT</span>
         <b>{money(price.taxable)}</b>
@@ -2856,12 +2879,6 @@ function TaxPricePreview({
         <span>VAT 7%</span>
         <b>{money(price.vat)}</b>
       </div>
-      {price.discount > 0 && (
-        <div className="tax-preview-row discount">
-          <span>ส่วนลดรวม</span>
-          <b>− {money(price.discount)}</b>
-        </div>
-      )}
       <div className="tax-preview-total">
         <span>
           <b>ยอดสุทธิ</b>
@@ -3463,11 +3480,16 @@ function ServiceRecipe(p: {
         />
         <div className="recipe-totals">
           <span>
+            ค่าบริการ <small>ไม่คิด VAT</small>
+            <b>{money(p.service.feeBreakdown?.serviceFee ?? 0)}</b>
+          </span>
+          <span>
             ค่าหัตถการ <small>ไม่คิด VAT</small>
             <b>
               {money(
-                p.service.taxBreakdown?.nonTaxableAmount ??
-                  p.service.serviceDetail?.servicePrice,
+                p.service.feeBreakdown?.procedureFee ??
+                  p.service.taxBreakdown?.nonTaxableAmount ??
+                  p.service.serviceDetail?.servicePrice ?? p.service.courseDetail?.coursePrice,
               )}
             </b>
           </span>
@@ -3693,7 +3715,7 @@ function CatalogCard({
     item.type === "PRODUCT"
       ? `${item.productDetail?.unit} · stock ${stock ?? 0} · ขั้นต่ำ ${minStock}`
       : item.type === "SERVICE"
-        ? `${item.serviceDetail?.durationMinutes} นาที · ค่าบริการ ${money(item.serviceDetail?.servicePrice)}`
+        ? `${item.serviceDetail?.durationMinutes} นาที · ค่าบริการ ${money(item.feeBreakdown?.serviceFee ?? 0)}`
         : item.type === "COURSE"
           ? `${item.courseDetail?.sessionCount} ครั้ง`
           : "Bundle";

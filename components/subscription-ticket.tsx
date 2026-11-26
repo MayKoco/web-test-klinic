@@ -4,6 +4,7 @@ import styles from "./subscription-ticket.module.css";
 import { SubscriptionIcon as Icon } from "./subscription-registration";
 type Ticket = {
   id: string;
+  purpose?: "NEW_ORGANIZATION" | "ADDITIONAL_PACKAGE" | "PACKAGE_RENEWAL";
   clinicName: string;
   packageName: string;
   amountMinor: number;
@@ -200,6 +201,13 @@ export function SubscriptionTicket({
     }
   }
   const free = ticket?.paymentMethod === "FREE";
+  const renewal = ticket?.purpose === "PACKAGE_RENEWAL";
+  const additional = ticket?.purpose === "ADDITIONAL_PACKAGE";
+  const fulfillmentTitle = renewal
+    ? "ต่ออายุแพ็กเกจ"
+    : additional
+      ? "เปิดแพ็กเกจเพิ่ม"
+      : "เปิดใช้งานคลินิก";
   const accepted =
     !!ticket && ["ACCEPTED", "COMPLETED"].includes(ticket.requestStatus);
   const authorized =
@@ -229,7 +237,7 @@ export function SubscriptionTicket({
           done: authorized,
         },
         {
-          title: "เปิดใช้งานคลินิก",
+          title: fulfillmentTitle,
           detail: ticket
             ? label[ticket.provisioningStatus] || ticket.provisioningStatus
             : "ยังไม่เริ่มสร้าง",
@@ -266,7 +274,7 @@ export function SubscriptionTicket({
           done: authorized,
         },
         {
-          title: "เปิดใช้งานคลินิก",
+          title: fulfillmentTitle,
           detail: ticket
             ? label[ticket.provisioningStatus] || ticket.provisioningStatus
             : "ยังไม่เริ่มสร้าง",
@@ -274,9 +282,17 @@ export function SubscriptionTicket({
         },
       ];
   const currentStep = steps.findIndex((step) => !step.done);
-  const reassurance = ready
-    ? "ระบบสร้างองค์กรและสาขาแรกพร้อมใช้งานแล้ว และเริ่มนับอายุแพ็กเกจเรียบร้อย"
-    : "แพ็กเกจจะเริ่มนับเมื่อระบบสร้างองค์กรและสาขาแรกพร้อมใช้งาน ทุกสาขาหมดอายุพร้อมกัน";
+  const reassurance = renewal
+    ? ready
+      ? "ต่ออายุสำเร็จ สาขาเดิมกลับมาใช้งานได้ตามสถานะของแต่ละสาขา"
+      : "เมื่อยืนยันยอดโอนแล้ว ระบบจะเพิ่มอายุให้แพ็กเกจเดิม"
+    : additional
+      ? ready
+        ? "แพ็กเกจพร้อมใช้แล้ว สร้างสาขาจากการ์ดแพ็กเกจในหน้าจัดการองค์กรได้"
+        : "เมื่อยืนยันยอดโอนแล้ว แพ็กเกจนี้จะเริ่มนับอายุและมีโควตาสาขาของตัวเอง"
+      : ready
+        ? "ระบบสร้างองค์กรและสาขาแรกพร้อมใช้งานแล้ว และเริ่มนับอายุแพ็กเกจเรียบร้อย"
+        : "แพ็กเกจเริ่มนับเมื่อองค์กรและสาขาแรกพร้อมใช้งาน";
   return (
     <div className={styles.page}>
       <header className={styles.topbar}>
@@ -290,7 +306,7 @@ export function SubscriptionTicket({
       <main className={styles.wrap}>
         <header className={styles.heading}>
           <div>
-            <p className={styles.eyebrow}>รายการคำขอเปิดใช้งานคลินิก</p>
+            <p className={styles.eyebrow}>คำขอแพ็กเกจ</p>
             <h1>ติดตามสถานะคำขอและการชำระเงิน</h1>
             <p className={styles.reference}>
               เลขอ้างอิง <span>{id}</span>
@@ -671,7 +687,11 @@ export function SubscriptionTicket({
                       <div>
                         <dt>สถานะคำขอ</dt>
                         <dd>
-                          {label[ticket.requestStatus] || ticket.requestStatus}
+                          {(ticket.requestStatus === "COMPLETED" &&
+                          (renewal || additional)
+                            ? "ดำเนินการสำเร็จ"
+                            : label[ticket.requestStatus]) ||
+                            ticket.requestStatus}
                         </dd>
                       </div>
                     </dl>

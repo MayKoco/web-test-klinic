@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import UndoCheckInDialog from "@/components/undo-check-in-dialog";
@@ -12,7 +12,8 @@ import { createClientId } from "@/lib/client-id";
 type BoardAction = "CHECK_IN" | "START" | "FINISH" | "COMPLETE" | "CANCEL";
 type SettlementMode = "PAYMENT" | "ENTITLEMENT" | "NO_CHARGE";
 type TaxBreakdown = { taxableAmount: string; nonTaxableAmount: string; taxAmount: string; grossAmount: string };
-type CatalogItem = { id: string; code: string; name: string; type: "PRODUCT" | "SERVICE" | "COURSE"; basePrice?: string; discountType?: "NONE" | "PERCENT" | "AMOUNT"; discountValue?: string; finalPrice: string; taxBreakdown?: TaxBreakdown | null; productDetail?: { unit?: string | null; currentStock?: number }; serviceDetail?: { durationMinutes?: number | null }; courseDetail?: { sessionCount?: number | null } };
+type FeeBreakdown = { serviceFee: string; procedureFee: string; products: string };
+type CatalogItem = { id: string; code: string; name: string; type: "PRODUCT" | "SERVICE" | "COURSE"; basePrice?: string; discountType?: "NONE" | "PERCENT" | "AMOUNT"; discountValue?: string; finalPrice: string; taxBreakdown?: TaxBreakdown | null; feeBreakdown?: FeeBreakdown | null; productDetail?: { unit?: string | null; currentStock?: number }; serviceDetail?: { durationMinutes?: number | null }; courseDetail?: { sessionCount?: number | null } };
 type SymptomTag = { id: string; name: string; createdAt?: string; updatedAt?: string };
 type TreatmentAreaType = "FACE" | "BODY" | "MOUTH" | "OTHER";
 type TreatmentArea = { type: TreatmentAreaType; part: string; partName: string; detail: string };
@@ -35,7 +36,7 @@ type AppointmentItem = { id: string; catalogItemId: string; name: string; type: 
 type UnpaidSale = { id: string; status: string; balanceAmount: string };
 type SaleDetail = {
   id: string; saleNo: string; status: string; subtotal: string; discountAmount: string; taxableAmount: string; nonTaxableAmount: string; taxAmount: string; netAmount: string; balanceAmount: string; note?: string | null;
-  lines: { id: string; catalogItemId: string; source?: "CHECKOUT" | "TREATMENT_ADD_ON"; itemType: string; itemCodeSnapshot: string; itemNameSnapshot: string; quantity: number; unitBasePriceSnapshot: string; discountAmount: string; taxableAmount: string; nonTaxableAmount: string; taxAmount: string; netAmount: string; components?: { id: string; componentType: string; nameSnapshot: string; quantity: number; allocatedNetAmount: string }[] }[];
+  lines: { id: string; catalogItemId: string; source?: "CHECKOUT" | "TREATMENT_ADD_ON"; itemType: string; itemCodeSnapshot: string; itemNameSnapshot: string; quantity: number; unitBasePriceSnapshot: string; discountAmount: string; taxableAmount: string; nonTaxableAmount: string; feeBreakdown?: FeeBreakdown | null; taxAmount: string; netAmount: string; components?: { id: string; componentType: string; nameSnapshot: string; quantity: number; allocatedNetAmount: string }[] }[];
 };
 type CheckoutState = { card: BoardCard; saleId: string; amount: string; method: string; sale?: SaleDetail; context?: TreatmentContext | null; catalog: CatalogItem[]; checkoutLines: Record<string, number>; query: string; dirty: boolean };
 type ReceiptSnapshot = {
@@ -145,6 +146,13 @@ type SavedTreatmentMedia = {
   downloadUrl?: string;
   fileAsset?: { id: string; originalName: string; mimeType: string };
 };
+type AddedTreatmentItem = {
+  itemId: string;
+  quantity: number;
+  status?: "USED" | "NOT_USED";
+  usedQuantity?: number;
+};
+type AddedTreatmentResult = Required<AddedTreatmentItem> & { name: string; type: "PRODUCT" | "SERVICE" };
 type TreatmentRecordData = {
   id: string;
   version: number;
@@ -153,6 +161,7 @@ type TreatmentRecordData = {
   treatmentDetail: string;
   treatmentAreas?: unknown;
   medications?: unknown;
+  addOnResults?: AddedTreatmentResult[];
   aftercareNote?: string | null;
   createdAt: string;
   updatedAt?: string;
@@ -280,6 +289,10 @@ export default function QueueBoard() {
   const [date, setDate] = useState(localDate());
   const [doctorId, setDoctorId] = useState("");
   const [search, setSearch] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const boardRequest = useRef(0);
+  const searchTerm = search.trim();
   const [board, setBoard] = useState<BoardData>(blankBoard);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -309,18 +322,21 @@ export default function QueueBoard() {
   const [urgentOpen, setUrgentOpen] = useState(false);
 
   const loadBoard = useCallback(async (accessToken: string, targetDate: string, targetDoctor = "", term = "", silent = false) => {
+    const request = ++boardRequest.current;
     if (!silent) setLoading(true);
     try {
       const params = new URLSearchParams({ date: targetDate });
       if (targetDoctor) params.set("doctorId", targetDoctor);
       if (term.trim()) params.set("search", term.trim());
       const response = await apiRequest<BoardData>(`/appointments/board?${params}`, { token: accessToken });
+      if (request !== boardRequest.current) return;
       setBoard(response.data);
+      setAppliedSearch(term.trim());
       setNotice(current => current?.kind === "error" ? null : current);
     } catch (error) {
-      setNotice({ kind: "error", text: apiError(error) });
+      if (request === boardRequest.current) setNotice({ kind: "error", text: apiError(error) });
     } finally {
-      if (!silent) setLoading(false);
+      if (request === boardRequest.current) setLoading(false);
     }
   }, []);
 
@@ -341,9 +357,8 @@ export default function QueueBoard() {
         setCanUndoCheckIn(["QUEUE_VIEW", "QUEUE_MANAGE", "APPOINTMENT_CHECK_IN", "APPOINTMENT_COMPLETE"].every(code => result.data.permissions.includes(code)));
         setCanBookWalkIn(["APPOINTMENT_VIEW", "APPOINTMENT_CREATE", "APPOINTMENT_UPDATE", "APPOINTMENT_CANCEL", "APPOINTMENT_ITEM_MANAGE", "PATIENT_VIEW", "PATIENT_CREATE", "PATIENT_UPDATE"].every(code => result.data.permissions.includes(code)));
       } catch { setCanBookWalkIn(false); setCanUndoCheckIn(false); setClinicalDoctorId(null); }
-      await loadBoard(savedToken, localDate());
     });
-  }, [loadBoard]);
+  }, []);
 
   useEffect(() => {
     if (!token) return;
@@ -364,6 +379,9 @@ export default function QueueBoard() {
   }, [date, doctorId, search, token, loadBoard]);
 
   const totalActive = board.summary.scheduled + board.summary.waiting + board.summary.inProgress + board.summary.pendingClose;
+  const searchResultCount = totalActive + board.summary.completed;
+  const searchLoading = loading || searchTerm !== appliedSearch;
+
 
   async function runAction(card: BoardCard, action: Exclude<BoardAction, "CANCEL">) {
     const config = actionConfig[action];
@@ -510,7 +528,9 @@ export default function QueueBoard() {
     event.preventDefault();
     if (!treatmentCard) return;
     const form = new FormData(event.currentTarget);
-    const addOns = JSON.parse(String(form.get("addOns") || "[]")) as { itemId: string; quantity: number }[];
+    const addOns = JSON.parse(String(form.get("addOns") || "[]")) as AddedTreatmentItem[];
+    if (addOns.some(line => line.status === "USED" && !line.usedQuantity)) return;
+    const hasBillableAddOns = addOns.some(line => line.status !== "NOT_USED");
     const media = JSON.parse(String(form.get("media") || "[]")) as { fileAssetId: string; type: TreatmentMediaType; sortOrder: number }[];
     setBusy(`${treatmentCard.appointmentId}:TREATMENT`);
     try {
@@ -536,7 +556,7 @@ export default function QueueBoard() {
       setTreatmentContext(null);
       setTreatmentProducts([]);
       setTreatmentSymptoms([]);
-      setNotice({ kind: "success", text: addOns.length > 0 ? "บันทึกการรักษาแล้ว สร้าง Bill ร่างและส่งไปรอชำระเงิน" : "บันทึกการรักษาแล้ว" });
+      setNotice({ kind: "success", text: hasBillableAddOns ? "บันทึกการรักษาแล้ว รายการที่ใช้ถูกส่งไปยังบิลร่าง" : "บันทึกการรักษาแล้ว" });
       await loadBoard(token, date, doctorId, search, true);
     } catch (error) {
       setNotice({ kind: "error", text: apiError(error) });
@@ -694,12 +714,37 @@ export default function QueueBoard() {
               <option value="">แพทย์ทั้งหมด</option>
               {doctors.map(doctor => <option key={doctor.id} value={doctor.id}>{doctor.prefix}{doctor.firstName} {doctor.lastName}</option>)}
             </select>
-            <label className="queue-search"><span>⌕</span><input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="ค้นหาชื่อ, HN, เบอร์โทร…" /></label>
+            <div className="queue-patient-filter" role="search" aria-label="ค้นหาคนไข้ในบอร์ด">
+              <label htmlFor="queue-patient-search">ค้นหาคนไข้</label>
+              <div className="queue-search">
+                <span aria-hidden="true">⌕</span>
+                <input
+                  ref={searchInputRef}
+                  id="queue-patient-search"
+                  type="search"
+                  value={search}
+                  onChange={event => setSearch(event.target.value)}
+                  placeholder="ชื่อ-นามสกุล, HN, เบอร์โทร, เลขนัด"
+                />
+                {search && <button type="button" onClick={() => {
+                  setSearch("");
+                  searchInputRef.current?.focus();
+                }}>ล้าง</button>}
+              </div>
+            </div>
             <div className="queue-create-actions">
               {canBookWalkIn && <button className="soft-button walkin-button" type="button" onClick={() => setWalkInOpen(true)}>+ Walk-in ปกติ</button>}
               <button className="primary-button urgent-walkin-button" type="button" onClick={() => setUrgentOpen(true)}>+ Walk-in เร่งด่วน</button>
             </div>
           </section>
+
+          {searchTerm && <p className="queue-search-summary" role="status">
+            {searchLoading
+              ? notice?.kind === "error" ? "ค้นหาไม่สำเร็จ" : "กำลังค้นหาคนไข้…"
+              : searchResultCount > 0
+                ? `พบ ${searchResultCount} นัดสำหรับ “${appliedSearch}”`
+                : `ไม่พบนัดที่ตรงกับ “${appliedSearch}” ในวันที่และตัวกรองที่เลือก`}
+          </p>}
 
           <section className="queue-overview">
             <div><span>งานที่กำลังดำเนินการ</span><b>{totalActive}</b><small>รายการ</small></div>
@@ -1246,6 +1291,22 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
   const [formulaQuantities, setFormulaQuantities] = useState<Record<string, number>>({});
   const [addOnQuery, setAddOnQuery] = useState("");
   const [addOns, setAddOns] = useState<Record<string, number>>({});
+  const [addOnOutcomes, setAddOnOutcomes] = useState<Record<string, { status: "USED" | "NOT_USED"; usedQuantity: number }>>({});
+  function removeAddOn(id: string) {
+    setAddOns(current => ({ ...current, [id]: 0 }));
+    setAddOnOutcomes(current => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
+  function setAddOnQuantity(id: string, quantity: number) {
+    if (quantity <= 0) return removeAddOn(id);
+    setAddOns(current => ({ ...current, [id]: quantity }));
+    setAddOnOutcomes(current => current[id]?.status === "USED"
+      ? { ...current, [id]: { status: "USED", usedQuantity: Math.min(quantity, current[id].usedQuantity) } }
+      : current);
+  }
   const [mediaUploads, setMediaUploads] = useState<TreatmentMediaUpload[]>([]);
   const [symptomTags, setSymptomTags] = useState<SymptomTag[]>(symptoms);
   const [selectedSymptoms, setSelectedSymptoms] = useState<SymptomTag[]>([]);
@@ -1263,14 +1324,28 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
     .slice(0, 8);
   const canCreateSymptom = Boolean(symptomQuery.trim()) && !symptomTags.some(tag => tag.name.toLocaleLowerCase("th-TH") === normalizedSymptomQuery);
   const selectedAddOns = products.filter(product => (addOns[product.id] ?? 0) > 0);
-  const addOnTotal = selectedAddOns.reduce((sum, product) => sum + Number(product.finalPrice) * addOns[product.id], 0);
+  const unresolvedAddOns = selectedAddOns.filter(product => product.type !== "COURSE" && !addOnOutcomes[product.id]).length;
+  const pendingResults = unresolved + unresolvedAddOns;
+  const addOnQuantityToBill = (product: CatalogItem) =>
+    product.type === "COURSE" ? addOns[product.id] : addOnOutcomes[product.id]?.usedQuantity ?? 0;
+  const addOnTotal = selectedAddOns.reduce((sum, product) => sum + Number(product.finalPrice) * addOnQuantityToBill(product), 0);
   const addOnBreakdown = selectedAddOns.reduce((totals, product) => {
-    const quantity = addOns[product.id];
-    totals.procedure += Number(product.taxBreakdown?.nonTaxableAmount ?? 0) * quantity;
+    const quantity = addOnQuantityToBill(product);
+    totals.service += Number(product.feeBreakdown?.serviceFee ?? 0) * quantity;
+    totals.procedure += Number(product.feeBreakdown?.procedureFee ?? product.taxBreakdown?.nonTaxableAmount ?? 0) * quantity;
     totals.goodsBeforeVat += Number(product.taxBreakdown?.taxableAmount ?? 0) * quantity;
     totals.vat += Number(product.taxBreakdown?.taxAmount ?? 0) * quantity;
     return totals;
-  }, { procedure: 0, goodsBeforeVat: 0, vat: 0 });
+  }, { service: 0, procedure: 0, goodsBeforeVat: 0, vat: 0 });
+  const addOnPayload: AddedTreatmentItem[] = selectedAddOns.map(product => {
+    const outcome = addOnOutcomes[product.id];
+    return {
+      itemId: product.id,
+      quantity: addOns[product.id],
+      ...(outcome && { status: outcome.status }),
+      ...(outcome?.status === "USED" && { usedQuantity: outcome.usedQuantity }),
+    };
+  });
   const money = (amount: number) => new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(amount);
   const medications = [
     ...formulaProducts.map(product => ({
@@ -1281,15 +1356,6 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
       source: product.source,
       sourceAppointmentItemId: product.sourceAppointmentItemId,
       kind: "FORMULA",
-    })),
-    ...selectedAddOns.filter(product => product.type === "PRODUCT").map(product => ({
-      catalogItemId: product.id,
-      name: product.name,
-      quantity: addOns[product.id],
-      unit: product.productDetail?.unit || "ชิ้น",
-      unitPrice: Number(product.finalPrice),
-      source: "TREATMENT_ADD_ON",
-      kind: "ADD_ON",
     })),
   ];
   const isAreaSelected = (type: TreatmentAreaType, part: string) => areas.some(area => area.type === type && area.part === part);
@@ -1433,7 +1499,7 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
     finally { setSymptomBusy(""); }
   };
 
-  return <div className="treatment-page" onClick={() => void closeDraft()}><form className="treatment-record-page" onClick={event => event.stopPropagation()} onSubmit={save}>
+  return <div className="treatment-page" onClick={() => void closeDraft()}><form className="treatment-record-page" onClick={event => event.stopPropagation()} onSubmit={event => { if (pendingResults) event.preventDefault(); else save(event); }}>
     <header className="treatment-page-header">
       <button type="button" className="treatment-back" disabled={mediaUploading} onClick={() => void closeDraft()}>←</button>
       <div><div className="treatment-title-line"><h2>บันทึกการรักษา</h2><span>ร่าง</span></div><p>เวชระเบียนความงามและแผนการรักษา</p></div>
@@ -1473,17 +1539,58 @@ function TreatmentDialog({ card, context, products, symptoms, token, results, bu
           <section><label>รายละเอียดการรักษา *</label><textarea name="treatmentDetail" required placeholder="บันทึกสิ่งที่ตรวจพบ ขั้นตอนการรักษา ปริมาณ และผลระหว่างทำ…" /></section>
           <section><label>ตำแหน่งที่รักษา *</label><div className="area-tabs"><button type="button" className={activeAreaType === "FACE" ? "active" : ""} onClick={() => setActiveAreaType("FACE")}>ใบหน้า</button><button type="button" className={activeAreaType === "MOUTH" ? "active" : ""} onClick={() => setActiveAreaType("MOUTH")}>ช่องปาก / ฟัน</button><button type="button" className={activeAreaType === "BODY" ? "active" : ""} onClick={() => setActiveAreaType("BODY")}>ร่างกาย</button></div><div className={`area-part-selector ${activeAreaType === "FACE" ? "with-face" : ""}`}>{activeAreaType === "FACE" && <div className="face-outline" aria-hidden="true"><span className="forehead">หน้าผาก</span><span className="nose">จมูก</span><span className="mouth">ปาก</span><span className="chin">คาง</span></div>}<div className="area-part-grid">{areaOptions.map(option => <button type="button" key={`${activeAreaType}:${option.part}`} className={isAreaSelected(activeAreaType, option.part) ? "selected" : ""} onClick={() => toggleArea(option)}>{isAreaSelected(activeAreaType, option.part) ? "✓ " : "+ "}{option.partName}</button>)}</div></div><div className="area-detail-list"><div className="area-detail-heading"><b>รายละเอียดรายตำแหน่ง</b><small>ระบุอาการ สิ่งที่ตรวจพบ หรือการรักษาของแต่ละส่วน</small></div>{areas.length ? areas.map(area => <article key={`${area.type}:${area.part}`}><header><span>{area.partName}</span><small>{area.type === "FACE" ? "ใบหน้า" : area.type === "MOUTH" ? "ช่องปาก / ฟัน" : "ร่างกาย"}</small><button type="button" onClick={() => removeArea(area)}>ลบ</button></header><textarea value={area.detail} onChange={event => setAreaDetail(area, event.target.value)} required placeholder={`${area.partName}: รายละเอียดการรักษาหรืออาการ`} /></article>) : <div className="treatment-empty compact">เลือกส่วนที่รักษาจากรายการด้านบน</div>}</div><input type="hidden" name="treatmentAreas" value={JSON.stringify(areas)} /></section>
           <section className="medication-panel"><div className="subsection-heading"><div><h3>ยาและเวชภัณฑ์ตามรายการรักษา</h3><p>ระบบตัด Lot แบบ FEFO ตามจำนวนใช้จริงเมื่อบันทึกการรักษา</p></div></div>{!formulaProducts.length ? <div className="treatment-empty compact">ไม่มีสินค้าในสูตรบริการ</div> : <div className="medication-table"><header><span>ชื่อรายการ</span><span>แนะนำ</span><span>ใช้จริง</span><span>หน่วย</span></header>{formulaProducts.map(product => { const formulaKey = `${product.sourceAppointmentItemId}:${product.catalogItemId}`; return <div key={formulaKey}><span><b>{product.name}</b><small>จาก {product.source}</small></span><span>{product.recommendedQuantity}</span><span className="qty-control"><button type="button" onClick={() => setFormulaQuantities(value => ({ ...value, [formulaKey]: Math.max(0, (value[formulaKey] ?? product.recommendedQuantity) - 1) }))}>−</button><b>{formulaQuantities[formulaKey] ?? product.recommendedQuantity}</b><button type="button" onClick={() => setFormulaQuantities(value => ({ ...value, [formulaKey]: (value[formulaKey] ?? product.recommendedQuantity) + 1 }))}>+</button></span><span>{product.unit || "ชิ้น"}</span></div>; })}</div>}</section>
-          <section className="medication-panel add-on-panel"><div className="subsection-heading"><div><h3>รายการเพิ่มเติม (Add-on)</h3><p>เพิ่มสินค้า บริการ หรือคอร์ส แล้วส่งยอดรวมไปยังขั้นตอนชำระเงิน</p></div>{selectedAddOns.length > 0 && <span className="addon-payment-state">รอชำระ {money(addOnTotal)}</span>}</div><div className="addon-search"><span>⌕</span><input value={addOnQuery} onChange={event => setAddOnQuery(event.target.value)} placeholder="ค้นหาสินค้า บริการ คอร์ส หรือรหัส…" /></div>{addOnQuery.trim() && <div className="addon-results">{matchingProducts.length ? matchingProducts.map(product => { const hasStockSnapshot = product.productDetail?.currentStock !== undefined; const outOfStock = product.type === "PRODUCT" && hasStockSnapshot && product.productDetail!.currentStock! <= 0; return <button key={product.id} type="button" disabled={outOfStock} onClick={() => { setAddOns(value => ({ ...value, [product.id]: (value[product.id] ?? 0) + 1 })); setAddOnQuery(""); }}><span><b>{product.name}</b><small>{product.type === "PRODUCT" ? `สินค้า · ${product.code}${hasStockSnapshot ? ` · stock ${product.productDetail?.currentStock} ${product.productDetail?.unit || "ชิ้น"}` : product.productDetail?.unit ? ` · ${product.productDetail.unit}` : ""}` : product.type === "SERVICE" ? `บริการ · ${product.code}${product.serviceDetail?.durationMinutes ? ` · ${product.serviceDetail.durationMinutes} นาที` : ""}` : `คอร์ส · ${product.code}${product.courseDetail?.sessionCount ? ` · ${product.courseDetail.sessionCount} ครั้ง` : ""}`}</small></span><strong>{money(Number(product.finalPrice))}</strong><em>{outOfStock ? "สินค้าหมด" : "+ เพิ่ม"}</em></button>; }) : <p>ไม่พบรายการที่ค้นหา</p>}</div>}{selectedAddOns.length > 0 ? <div className="addon-cart"><header><span>รายการ</span><span>จำนวน</span><span>ราคารวม VAT</span><span /></header>{selectedAddOns.map(product => { const quantity = addOns[product.id]; const tax = product.taxBreakdown; return <div key={product.id}><span><b>{product.name}</b><small>{product.type === "PRODUCT" ? `สินค้า · ${product.code}` : product.type === "SERVICE" ? `บริการ · ${product.code}` : `คอร์ส · ${product.code}`}</small>{tax && <small className="addon-line-tax">หัตถการ {money(Number(tax.nonTaxableAmount) * quantity)} · สินค้าก่อน VAT {money(Number(tax.taxableAmount) * quantity)} · VAT {money(Number(tax.taxAmount) * quantity)}</small>}</span><span className="qty-control"><button type="button" onClick={() => setAddOns(value => ({ ...value, [product.id]: Math.max(0, value[product.id] - 1) }))}>−</button><b>{quantity}</b><button type="button" onClick={() => setAddOns(value => ({ ...value, [product.id]: value[product.id] + 1 }))}>+</button></span><strong>{money(Number(product.finalPrice) * quantity)}</strong><button type="button" className="addon-remove" onClick={() => setAddOns(value => ({ ...value, [product.id]: 0 }))}>ลบ</button></div>; })}<footer className="addon-totals"><div><span>ค่าหัตถการ (ไม่คิด VAT)</span><b>{money(addOnBreakdown.procedure)}</b></div><div><span>สินค้า / ยา / เวชภัณฑ์ก่อน VAT</span><b>{money(addOnBreakdown.goodsBeforeVat)}</b></div><div><span>VAT 7%</span><b>{money(addOnBreakdown.vat)}</b></div><div className="addon-grand-total"><span>ยอด Add-on ที่ต้องชำระ</span><b>{money(addOnTotal)}</b></div></footer></div> : <div className="treatment-empty compact">ยังไม่มีรายการ Add-on</div>}</section>
+          <section className="medication-panel add-on-panel"><div className="subsection-heading"><div><h3>รายการเพิ่มเติม (Add-on)</h3><p>ยืนยันสินค้าและบริการที่ใช้จริงก่อนบันทึก คอร์สที่ซื้อเพิ่มจะออกสิทธิ์หลังชำระเงิน</p></div>{selectedAddOns.length > 0 && <span className="addon-payment-state">รอชำระ {money(addOnTotal)}</span>}</div><div className="addon-search"><span>⌕</span><input value={addOnQuery} onChange={event => setAddOnQuery(event.target.value)} placeholder="ค้นหาสินค้า บริการ คอร์ส หรือรหัส…" /></div>{addOnQuery.trim() && <div className="addon-results">{matchingProducts.length ? matchingProducts.map(product => { const hasStockSnapshot = product.productDetail?.currentStock !== undefined; const outOfStock = product.type === "PRODUCT" && hasStockSnapshot && product.productDetail!.currentStock! <= 0; return <button key={product.id} type="button" disabled={outOfStock} onClick={() => { setAddOns(value => ({ ...value, [product.id]: (value[product.id] ?? 0) + 1 })); setAddOnQuery(""); }}><span><b>{product.name}</b><small>{product.type === "PRODUCT" ? `สินค้า · ${product.code}${hasStockSnapshot ? ` · stock ${product.productDetail?.currentStock} ${product.productDetail?.unit || "ชิ้น"}` : product.productDetail?.unit ? ` · ${product.productDetail.unit}` : ""}` : product.type === "SERVICE" ? `บริการ · ${product.code}${product.serviceDetail?.durationMinutes ? ` · ${product.serviceDetail.durationMinutes} นาที` : ""}` : `คอร์ส · ${product.code}${product.courseDetail?.sessionCount ? ` · ${product.courseDetail.sessionCount} ครั้ง` : ""}`}</small></span><strong>{money(Number(product.finalPrice))}</strong><em>{outOfStock ? "สินค้าหมด" : "+ เพิ่ม"}</em></button>; }) : <p>ไม่พบรายการที่ค้นหา</p>}</div>}{selectedAddOns.length > 0 ? <div className="addon-cart"><header><span>รายการ</span><span>จำนวน</span><span>ราคารวม VAT</span><span /></header>{selectedAddOns.map(product => { const quantity = addOns[product.id]; const billed = addOnQuantityToBill(product); const outcome = addOnOutcomes[product.id]; return <div key={product.id}><span><b>{product.name}</b><small>{product.type === "PRODUCT" ? `สินค้า · ${product.code}` : product.type === "SERVICE" ? `บริการ · ${product.code}` : `คอร์ส · ${product.code}`}</small></span><span className="qty-control"><button type="button" onClick={() => setAddOnQuantity(product.id, quantity - 1)}>−</button><b>{quantity}</b><button type="button" onClick={() => setAddOnQuantity(product.id, quantity + 1)}>+</button></span><strong>{money(Number(product.finalPrice) * billed)}</strong><button type="button" className="addon-remove" onClick={() => removeAddOn(product.id)}>ลบ</button>
+              {product.type !== "COURSE" && (
+                <div className="addon-usage">
+                  <label>ผลการใช้
+                    <select
+                      aria-label={`ผลการใช้ ${product.name}`}
+                      value={outcome?.status ?? ""}
+                      onChange={event => {
+                        const status = event.target.value;
+                        setAddOnOutcomes(current => {
+                          if (status === "USED" || status === "NOT_USED") {
+                            return { ...current, [product.id]: { status, usedQuantity: status === "USED" ? quantity : 0 } };
+                          }
+                          const next = { ...current };
+                          delete next[product.id];
+                          return next;
+                        });
+                      }}
+                    >
+                      <option value="">รอยืนยัน</option>
+                      <option value="USED">ใช้</option>
+                      <option value="NOT_USED">ไม่ใช้</option>
+                    </select>
+                  </label>
+                  {outcome?.status === "USED" && (
+                    <label>ใช้จริง
+                      <input
+                        aria-label={`ใช้จริง ${product.name}`}
+                        type="number" min={1} max={quantity} step={1} required
+                        value={outcome.usedQuantity}
+                        onChange={event => {
+                          const usedQuantity = event.currentTarget.valueAsNumber;
+                          if (Number.isInteger(usedQuantity) && usedQuantity >= 1 && usedQuantity <= quantity) {
+                            setAddOnOutcomes(current => ({ ...current, [product.id]: { status: "USED", usedQuantity } }));
+                          }
+                        }}
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
+            </div>; })}<footer className="addon-totals"><div><span>ค่าบริการ (ไม่คิด VAT)</span><b>{money(addOnBreakdown.service)}</b></div><div><span>ค่าหัตถการ (ไม่คิด VAT)</span><b>{money(addOnBreakdown.procedure)}</b></div><div><span>สินค้า / ยา / เวชภัณฑ์ก่อน VAT</span><b>{money(addOnBreakdown.goodsBeforeVat)}</b></div><div><span>VAT 7%</span><b>{money(addOnBreakdown.vat)}</b></div><div className="addon-grand-total"><span>ยอด Add-on ที่ต้องชำระ</span><b>{money(addOnTotal)}</b></div></footer></div> : <div className="treatment-empty compact">ยังไม่มีรายการ Add-on</div>}</section>
           <section><label>คำแนะนำหลังการรักษา</label><textarea name="aftercareNote" placeholder="คำแนะนำ การดูแลตัวเอง และวันนัดครั้งถัดไป…" /></section>
           <input type="hidden" name="medications" value={JSON.stringify(medications)} />
-          <input type="hidden" name="addOns" value={JSON.stringify(selectedAddOns.map(product => ({ itemId: product.id, quantity: addOns[product.id] })))} />
+          <input type="hidden" name="addOns" value={JSON.stringify(addOnPayload)} />
           <input type="hidden" name="media" value={JSON.stringify(readyMedia.map((item, index) => ({ fileAssetId: item.fileAssetId, type: item.type, sortOrder: index })))} />
         </main>
 
         <aside className="treatment-side">
           <section className="treatment-card photo-panel"><h3>ภาพการรักษา Before / After</h3><p>อัปโหลดเข้าพื้นที่จัดเก็บของคลินิก สูงสุดฝั่งละ 4 รูป</p><label>ก่อนรักษา</label><div className="photo-grid">{beforeImages.map(item => <div className={`photo-item ${item.status.toLowerCase()}`} key={item.localId}><Image unoptimized width={160} height={160} src={item.previewUrl} alt="ก่อนรักษา" /><button type="button" aria-label="ลบรูปก่อนรักษา" onClick={() => void removeTreatmentMedia(item)}>×</button>{item.status === "UPLOADING" && <span>กำลังอัปโหลด…</span>}{item.status === "ERROR" && <span title={item.error}>อัปโหลดไม่สำเร็จ</span>}</div>)}{beforeImages.length < 4 && <label className="photo-upload">＋<span>เพิ่มรูป</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={event => { void uploadTreatmentMedia(event.target.files, "BEFORE"); event.currentTarget.value = ""; }} /></label>}</div><label>หลังรักษา</label><div className="photo-grid">{afterImages.map(item => <div className={`photo-item ${item.status.toLowerCase()}`} key={item.localId}><Image unoptimized width={160} height={160} src={item.previewUrl} alt="หลังรักษา" /><button type="button" aria-label="ลบรูปหลังรักษา" onClick={() => void removeTreatmentMedia(item)}>×</button>{item.status === "UPLOADING" && <span>กำลังอัปโหลด…</span>}{item.status === "ERROR" && <span title={item.error}>อัปโหลดไม่สำเร็จ</span>}</div>)}{afterImages.length < 4 && <label className="photo-upload">＋<span>เพิ่มรูป</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={event => { void uploadTreatmentMedia(event.target.files, "AFTER"); event.currentTarget.value = ""; }} /></label>}</div>{mediaHasError && <div className="photo-error">ลบรูปที่อัปโหลดไม่สำเร็จแล้วเลือกใหม่</div>}</section>
           <section className="treatment-card doctor-sign"><small>แพทย์ผู้รับรองการรักษา</small><strong>{card.doctor.name}</strong><span>{context.doctor?.licenseNo ? `เลขใบประกอบโรคศิลปะ: ${context.doctor.licenseNo}` : context.doctor?.specialty || "แพทย์ผู้รักษา"}</span></section>
-          <button className="treatment-submit" disabled={busy || mediaUploading || mediaHasError || unresolved > 0 || areas.length === 0 || hasIncompleteArea || selectedSymptoms.length === 0}>{busy ? "กำลังบันทึก…" : mediaUploading ? "กำลังอัปโหลดรูป…" : mediaHasError ? "กรุณาตรวจสอบรูปที่อัปโหลด" : unresolved > 0 ? `กรุณายืนยันอีก ${unresolved} รายการ` : selectedSymptoms.length === 0 ? "กรุณาเลือกอาการ / สภาวะ" : areas.length === 0 ? "กรุณาเลือกตำแหน่งรักษา" : hasIncompleteArea ? "กรุณากรอกรายละเอียดทุกตำแหน่ง" : "จบการรักษา"}</button>
+          <button className="treatment-submit" disabled={busy || mediaUploading || mediaHasError || pendingResults > 0 || areas.length === 0 || hasIncompleteArea || selectedSymptoms.length === 0}>{busy ? "กำลังบันทึก…" : mediaUploading ? "กำลังอัปโหลดรูป…" : mediaHasError ? "กรุณาตรวจสอบรูปที่อัปโหลด" : pendingResults > 0 ? `กรุณายืนยันอีก ${pendingResults} รายการ` : selectedSymptoms.length === 0 ? "กรุณาเลือกอาการ / สภาวะ" : areas.length === 0 ? "กรุณาเลือกตำแหน่งรักษา" : hasIncompleteArea ? "กรุณากรอกรายละเอียดทุกตำแหน่ง" : "จบการรักษา"}</button>
           <p className="treatment-submit-note">การบันทึกจะยืนยันผลรายการรักษาและตัดสิทธิ์เฉพาะรายการที่เลือก “ใช้แล้ว”</p>
         </aside>
       </div>
@@ -1535,6 +1642,12 @@ function TreatmentHistoryDialog({ value, busy, close, update, addendum }: {
       <aside><h3>เวอร์ชันทั้งหมด</h3>{value.versions.map(item => <button type="button" className={selectedVersion === item.version ? "active" : ""} key={item.version} onClick={() => setSelectedVersion(item.version)}><b>เวอร์ชัน {item.version}</b><span>{new Date(item.changedAt).toLocaleString("th-TH")}</span>{item.changeReason && <small>{item.changeReason}</small>}</button>)}</aside>
       <main>
         {current && <section className="version-preview"><div className="version-preview-head"><h3>เวอร์ชัน {current.version}</h3><span>{new Date(current.changedAt).toLocaleString("th-TH")}</span></div><dl><div><dt>อาการ / สภาวะ</dt><dd>{listValue(current.symptoms).join(", ") || "—"}</dd></div><div><dt>รายละเอียดการรักษา</dt><dd>{current.treatmentDetail}</dd></div><div><dt>ตำแหน่งที่รักษา</dt><dd>{Array.isArray(current.treatmentAreas) && current.treatmentAreas.length ? (current.treatmentAreas as TreatmentArea[]).map(area => <span key={`${area.type}:${area.part}`}><b>{area.partName}</b>{area.detail}</span>) : "—"}</dd></div><div><dt>คำแนะนำหลังรักษา</dt><dd>{current.aftercareNote || "—"}</dd></div></dl><div className="version-media"><h4>ภาพ Before / After</h4>{current.mediaSnapshot?.length ? <div className="version-media-groups">{(["BEFORE", "AFTER"] as TreatmentMediaType[]).map(type => <section key={type}><b>{type === "BEFORE" ? "ก่อนรักษา" : "หลังรักษา"}</b><div>{current.mediaSnapshot?.filter(item => item.type === type).map(item => item.downloadUrl ? <a href={item.downloadUrl} target="_blank" rel="noreferrer" key={item.id}><Image unoptimized width={180} height={180} src={item.downloadUrl} alt={item.caption || (type === "BEFORE" ? "ก่อนรักษา" : "หลังรักษา")} /></a> : <span key={item.id}>{item.originalName || "ไม่สามารถเปิดรูปได้"}</span>)}</div></section>)}</div> : <p className="muted">เวอร์ชันนี้ไม่มีภาพการรักษา</p>}</div></section>}
+        {Boolean(current?.addOnResults?.length) && <section className="version-preview">
+          <h3>ผลการใช้รายการเพิ่มเติม</h3>
+          <ul>{current?.addOnResults?.map(item => (
+            <li key={item.itemId}><b>{item.name}</b> · {item.status === "USED" ? `ใช้จริง ${item.usedQuantity} จาก ${item.quantity}` : "ไม่ใช้"}</li>
+          ))}</ul>
+        </section>}
         {canEdit ? <form key={value.record.version} className="revision-form" onSubmit={saveRevision}><h3>แก้ไขผลการรักษาปัจจุบัน</h3><label>อาการ / สภาวะ<input value={symptoms} onChange={event => setSymptoms(event.target.value)} placeholder="คั่นแต่ละรายการด้วยเครื่องหมายจุลภาค" /></label><label>รายละเอียดการรักษา<textarea name="treatmentDetail" required defaultValue={value.record.treatmentDetail} /></label><div className="revision-areas"><label>รายละเอียดตำแหน่งที่รักษา</label>{areas.map((area, index) => <div key={`${area.type}:${area.part}`}><b>{area.partName}</b><textarea required value={area.detail} onChange={event => setAreas(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, detail: event.target.value } : item))} /></div>)}</div><label>คำแนะนำหลังรักษา<textarea name="aftercareNote" defaultValue={value.record.aftercareNote ?? ""} /></label><label>เหตุผลที่แก้ไข<input name="changeReason" placeholder="เช่น แก้คำผิด หรือเพิ่มเติมรายละเอียดจากแพทย์" /></label><button className="primary-button" disabled={busy}>{busy ? "กำลังบันทึก…" : `บันทึกเป็นเวอร์ชัน ${value.record.version + 1}`}</button></form> : <form className="addendum-form" onSubmit={saveAddendum}><h3>เพิ่มหมายเหตุเพิ่มเติม</h3><p>หมายเหตุจะต่อท้ายเวชระเบียนและไม่เปลี่ยนข้อมูลในเวอร์ชันเดิม</p><textarea name="note" required maxLength={4000} placeholder="ระบุข้อมูลติดตามอาการหรือข้อมูลเพิ่มเติม…" /><button className="primary-button" disabled={busy}>{busy ? "กำลังบันทึก…" : "เพิ่มหมายเหตุ"}</button></form>}
         <section className="addendum-list"><h3>หมายเหตุเพิ่มเติม</h3>{value.record.addenda?.length ? value.record.addenda.map(item => <article key={item.id}><p>{item.note}</p><small>{new Date(item.createdAt).toLocaleString("th-TH")}</small></article>) : <p className="muted">ยังไม่มีหมายเหตุเพิ่มเติม</p>}</section>
       </main>
@@ -1561,7 +1674,9 @@ function PaymentDialog({ value, busy, setValue, close, saveDraft, confirm, save 
   const subtotal = value.sale?.subtotal ?? value.amount;
   const discount = value.sale?.discountAmount ?? "0";
   const taxableAmount = saleLines.reduce((sum, line) => sum + Number(line.taxableAmount ?? 0), 0);
-  const nonTaxableAmount = saleLines.reduce((sum, line) => sum + Number(line.nonTaxableAmount ?? 0), 0);
+  const serviceFee = saleLines.reduce((sum, line) => sum + Number(line.feeBreakdown?.serviceFee ?? 0), 0);
+  const procedureFee = saleLines.reduce((sum, line) => sum + Number(line.feeBreakdown?.procedureFee ?? (line.itemType === "PACKAGE" ? 0 : line.nonTaxableAmount) ?? 0), 0);
+  const packageFees = saleLines.reduce((sum, line) => sum + (line.itemType === "PACKAGE" ? Number(line.nonTaxableAmount ?? 0) : 0), 0);
   const taxAmount = value.sale?.taxAmount ?? saleLines.reduce((sum, line) => sum + Number(line.taxAmount ?? 0), 0);
 
   return <div className="checkout-page" onClick={close}><form className="checkout-workspace" onClick={event => event.stopPropagation()} onSubmit={save}>
@@ -1571,13 +1686,13 @@ function PaymentDialog({ value, busy, setValue, close, saveDraft, confirm, save 
       <main>
         <section className="checkout-card checkout-treatment-summary"><h3>สรุปผลการรักษาสำหรับ Checkout</h3><p>รายการที่ยืนยันว่าใช้จริง</p>{value.card.items.filter(item => item.usageStatus === "USED").length ? value.card.items.filter(item => item.usageStatus === "USED").map(item => <div key={item.id}><span><b>{item.name}</b><small>{item.type === "COURSE" ? "คอร์ส / สิทธิ์ของลูกค้า" : "บริการ"}</small></span><em>{item.settlementMode === "ENTITLEMENT" ? "ใช้สิทธิ์แล้ว" : item.settlementMode === "NO_CHARGE" ? "ไม่มีค่าใช้จ่าย" : "คิดเงิน"}</em></div>) : <div className="checkout-empty">ไม่มีรายการสิทธิ์ที่ใช้ในนัดนี้</div>}</section>
         <section className="checkout-card"><div className="checkout-section-head"><div><h3>ยา / เวชภัณฑ์ตามรายการรักษา</h3><p>รวมอยู่ในราคาบริการ ไม่คิดเงินเพิ่ม</p></div><span>฿0</span></div>{includedMedications.length ? includedMedications.map((item,index) => <div className="checkout-line" key={`${item.name}-${index}`}><span>{item.name || "รายการในสูตร"}</span><b>{item.quantity ?? 1} {item.unit || "ชิ้น"}</b></div>) : <div className="checkout-empty">ไม่มีเวชภัณฑ์ในสูตร</div>}</section>
-        <section className="checkout-card"><div className="checkout-section-head"><div><h3>รายการ Add-on จากแพทย์</h3><p>{value.sale?.saleNo} · ล็อกจากผลการรักษา หากต้องแก้ให้กลับไปแก้เวชระเบียน</p></div><span className="checkout-locked">ล็อกแล้ว</span></div>{treatmentLines.length ? treatmentLines.map(line => <div className="checkout-charge-line" key={line.id}><span><b>{line.itemNameSnapshot}</b><small>{line.itemCodeSnapshot} · ×{line.quantity}</small><small>หัตถการ {money(line.nonTaxableAmount)} · สินค้าก่อน VAT {money(line.taxableAmount)} · VAT {money(line.taxAmount)}</small></span><em>{line.itemType === "PRODUCT" ? "สินค้า / ยา / เวชภัณฑ์" : line.itemType === "SERVICE" ? "บริการ" : "คอร์ส"}</em><strong>{money(line.netAmount)}</strong></div>) : <div className="checkout-empty">ไม่มี Add-on จากแพทย์</div>}</section>
+        <section className="checkout-card"><div className="checkout-section-head"><div><h3>รายการ Add-on จากแพทย์</h3><p>{value.sale?.saleNo} · ล็อกจากผลการรักษา หากต้องแก้ให้กลับไปแก้เวชระเบียน</p></div><span className="checkout-locked">ล็อกแล้ว</span></div>{treatmentLines.length ? treatmentLines.map(line => <div className="checkout-charge-line" key={line.id}><span><b>{line.itemNameSnapshot}</b><small>{line.itemCodeSnapshot} · ×{line.quantity}</small><small>บริการ {money(line.feeBreakdown?.serviceFee ?? 0)} · หัตถการ {money(line.feeBreakdown?.procedureFee ?? line.nonTaxableAmount)} · สินค้าก่อน VAT {money(line.taxableAmount)} · VAT {money(line.taxAmount)}</small></span><em>{line.itemType === "PRODUCT" ? "สินค้า / ยา / เวชภัณฑ์" : line.itemType === "SERVICE" ? "บริการ" : "คอร์ส"}</em><strong>{money(line.netAmount)}</strong></div>) : <div className="checkout-empty">ไม่มี Add-on จากแพทย์</div>}</section>
         <section className="checkout-card checkout-addon-editor"><div className="checkout-section-head"><div><h3>สินค้าเพิ่มเติมหน้า Checkout</h3><p>พนักงานเพิ่มหรือลดสินค้าได้จนกว่าจะกด “ยืนยันยอดชำระ”</p></div>{value.dirty && <span className="checkout-unsaved">ยังไม่บันทึก</span>}</div>{value.sale?.status === "DRAFT" ? <><div className="checkout-product-search"><span>⌕</span><input value={value.query} onChange={event => setValue(current => current ? { ...current, query: event.target.value } : current)} placeholder="ค้นหาชื่อสินค้า หรือรหัสสินค้า…" /></div>{matchingProducts.length > 0 && <div className="checkout-product-results">{matchingProducts.map(item => <button type="button" key={item.id} disabled={(item.productDetail?.currentStock ?? 0) <= 0} onClick={() => setValue(current => current ? { ...current, query: "", dirty: true, checkoutLines: { ...current.checkoutLines, [item.id]: (current.checkoutLines[item.id] ?? 0) + 1 } } : current)}><span><b>{item.name}</b><small>{item.code} · stock {item.productDetail?.currentStock ?? 0} {item.productDetail?.unit || "ชิ้น"}</small></span><strong>{money(item.finalPrice)}</strong><em>{(item.productDetail?.currentStock ?? 0) > 0 ? "+ เพิ่ม" : "สินค้าหมด"}</em></button>)}</div>}<div className="checkout-added-lines">{checkoutItems.length ? checkoutItems.map(item => <div key={item.itemId}><span><b>{item.catalogItem?.name ?? item.snapshot?.itemNameSnapshot}</b><small>{item.catalogItem?.code ?? item.snapshot?.itemCodeSnapshot}</small></span><div><button type="button" onClick={() => setValue(current => current ? { ...current, dirty: true, checkoutLines: { ...current.checkoutLines, [item.itemId]: Math.max(0, (current.checkoutLines[item.itemId] ?? 0) - 1) } } : current)}>−</button><b>{item.quantity}</b><button type="button" onClick={() => setValue(current => current ? { ...current, dirty: true, checkoutLines: { ...current.checkoutLines, [item.itemId]: (current.checkoutLines[item.itemId] ?? 0) + 1 } } : current)}>+</button></div><strong>{money((Number(item.catalogItem?.finalPrice ?? item.snapshot?.netAmount ?? 0) / Math.max(1, Number(item.snapshot?.quantity ?? 1))) * item.quantity)}</strong></div>) : <div className="checkout-empty">ยังไม่มีสินค้าที่พนักงานเพิ่ม</div>}</div><button type="button" className="checkout-save-draft" disabled={busy || !value.dirty} onClick={saveDraft}>{busy ? "กำลังบันทึก…" : "บันทึกรายการใน Bill"}</button></> : <div className="checkout-confirmed-lines">ยืนยันยอดแล้ว ไม่สามารถแก้รายการได้</div>}</section>
       </main>
       <aside>
         <section className="checkout-card checkout-select-card"><label>ผู้ขาย / ผู้แนะนำ<select><option>{value.card.doctor.name}</option></select></label></section>
         <section className="checkout-card checkout-select-card"><label>โปรโมชัน<select disabled><option>ไม่มีโปรโมชันเพิ่มเติม</option></select></label></section>
-        <section className="checkout-card checkout-totals"><h3>สรุปค่าใช้จ่าย</h3><div><span>ยอดก่อนส่วนลด</span><b>{money(subtotal)}</b></div><div><span>ส่วนลด</span><b className="discount">−{money(discount)}</b></div><div><span>ค่าหัตถการ (ไม่คิด VAT)</span><b>{money(nonTaxableAmount)}</b></div><div><span>สินค้า / ยา / เวชภัณฑ์ก่อน VAT</span><b>{money(taxableAmount)}</b></div><div><span>VAT 7%</span><b>{money(taxAmount)}</b></div><div className="checkout-grand"><span>ยอดสุทธิ</span><b>{money(value.amount)}</b></div></section>
+        <section className="checkout-card checkout-totals"><h3>สรุปค่าใช้จ่าย</h3><div><span>ยอดก่อนส่วนลด</span><b>{money(subtotal)}</b></div><div><span>ส่วนลด</span><b className="discount">−{money(discount)}</b></div><div><span>ค่าบริการ (ไม่คิด VAT)</span><b>{money(serviceFee)}</b></div><div><span>ค่าหัตถการ (ไม่คิด VAT)</span><b>{money(procedureFee)}</b></div>{packageFees > 0 && <div><span>ค่าบริการและหัตถการในแพ็กเกจ</span><b>{money(packageFees)}</b></div>}<div><span>สินค้า / ยา / เวชภัณฑ์ก่อน VAT</span><b>{money(taxableAmount)}</b></div><div><span>VAT 7%</span><b>{money(taxAmount)}</b></div><div className="checkout-grand"><span>ยอดสุทธิ</span><b>{money(value.amount)}</b></div></section>
         {value.sale?.status === "DRAFT" ? <><div className="checkout-draft-hint">ตรวจรายการและบันทึกการแก้ไขให้เรียบร้อย ก่อนยืนยันยอดเพื่อเปิดรับชำระ</div><button type="button" className="checkout-submit" disabled={busy} onClick={confirm}>{busy ? "กำลังยืนยันยอด…" : "ยืนยันยอดชำระ"}</button></> : <><section className="checkout-card checkout-payment-method"><label>ช่องทางชำระ<select value={value.method} onChange={event => setValue(current => current ? { ...current, method: event.target.value } : current)}><option value="QR">QR Payment</option><option value="CASH">เงินสด</option><option value="TRANSFER">โอนเงิน</option><option value="CREDIT_CARD">บัตรเครดิต</option></select></label><label>ยอดรับ<input type="number" min="0.01" step="0.01" required value={value.amount} onChange={event => setValue(current => current ? { ...current, amount: event.target.value } : current)} /></label></section><button className="checkout-submit" disabled={busy}>{busy ? "กำลังรับชำระ…" : "ดำเนินการ Checkout"}</button></>}
         <button type="button" className="checkout-cancel" onClick={close}>กลับไปหน้าคิว</button>
       </aside>

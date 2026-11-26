@@ -438,10 +438,26 @@ export default function ClinicWorkbench({
       email: String(form.get("email") ?? ""),
       password: String(form.get("password") ?? ""),
     };
+    const submitter = (event.nativeEvent as SubmitEvent).submitter;
+    const ownerOnly = submitter instanceof HTMLButtonElement && submitter.value === "owner";
+    const openOwnerWorkspace = async () => {
+      const { data } = await apiRequest<OwnerSession>("/owner/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ ...credentials, ...(clinicSubdomain && { subdomain: clinicSubdomain }) }),
+      });
+      window.localStorage.removeItem("klinic-test-token");
+      window.localStorage.removeItem("klinic-test-profile");
+      storeOwnerSession(data);
+      window.location.assign("/organization");
+    };
     const selectedClinicId = String(form.get("clinicId") ?? "");
     setBusy("login");
     setNotice(null);
     try {
+      if (ownerOnly) {
+        await openOwnerWorkspace();
+        return;
+      }
       let loginPath = clinicSubdomain
         ? `/auth/clinics/${encodeURIComponent(clinicSubdomain)}/login`
         : "/auth/login";
@@ -458,6 +474,14 @@ export default function ClinicWorkbench({
         });
       } catch (error) {
         const apiError = error as ApiClientError;
+        if (clinicSubdomain && ["CLINIC_SUBSCRIPTION_EXPIRED", "CLINIC_SUBSCRIPTION_INACTIVE"].includes(apiError.code)) {
+          try {
+            await openOwnerWorkspace();
+            return;
+          } catch (ownerError) {
+            if (!(ownerError instanceof ApiClientError) || ownerError.status !== 401) throw ownerError;
+          }
+        }
         if (clinicSubdomain || apiError.code !== "INVALID_CREDENTIALS" || !clinicIdentifier) {
           throw error;
         }
@@ -848,7 +872,7 @@ function LoginScreen({ busy, notice, onSubmit, clinicSubdomain, directory, direc
   const localCredentials = process.env.NODE_ENV === "development" && clinicSubdomain
     ? LOCAL_SUBDOMAIN_CREDENTIALS[clinicSubdomain]
     : undefined;
-  return <main className="login-shell"><section className="login-story"><div className="brand-mark">K<span>+</span></div><p className="eyebrow light">KLINIC API LAB</p><h1>ทดสอบเส้นทางนัดหมาย<br />ตั้งแต่เปิดห้องจนถึงจองคิว</h1><p>เว็บสำหรับตรวจ API จริงของ Doctor, Room, Patient และ Appointment แบบเห็นผลลัพธ์ทุกขั้นตอน</p><div className="flow-preview">{["สร้างห้อง", "ลงเวรหมอ", "เพิ่มคนไข้", "สร้างนัด"].map((item, index) => <div key={item}><b>{index + 1}</b><span>{item}</span></div>)}</div></section><section className="login-panel"><div className="login-card"><nav className="login-flow-menu" aria-label="เลือก flow ทดสอบ"><span className="active">Clinic Login</span><a href="/activation">Owner Activation Test</a></nav><p className="eyebrow">CLINIC WORKSPACE</p><h2>เข้าสู่ระบบทดสอบ</h2>{clinicSubdomain ? <p className="tenant-host-badge"><span /> {directory?.organizationName ?? "Clinic Group"}: <b>{clinicSubdomain}</b></p> : <p className="muted">กรอก Clinic code สำหรับ development</p>}<form onSubmit={onSubmit} method="post" className="form-stack">{!clinicSubdomain && <label>Clinic code<input name="clinicCode" defaultValue="CLINIC-0001" required /></label>}{clinicSubdomain && <label>สาขาที่ต้องการเข้า<select name="clinicId" required disabled={directoryLoading || !directory}><option value="">{directoryLoading ? "กำลังโหลดสาขา..." : "เลือกสาขา"}</option>{directory?.branches.map((branch) => <option key={branch.clinicId} value={branch.clinicId}>{branch.name} · {branch.code}</option>)}</select></label>}<label>Email<input name="email" type="email" autoComplete="username" defaultValue={localCredentials?.email ?? (clinicSubdomain ? "" : "owner@test.clinic")} required /></label><label>Password<input name="password" type="password" autoComplete="current-password" defaultValue={localCredentials?.password ?? (clinicSubdomain ? "" : "Test1234!")} required /></label><button className="primary-button" disabled={busy || Boolean(clinicSubdomain && (!directory || directoryLoading))}>{busy ? "กำลังเชื่อมต่อ..." : "เข้าสู่สาขาที่เลือก"}</button></form>{directoryError && <div className="notice error">{directoryError}</div>}{notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}<p className="connection-hint"><span /> {clinicSubdomain ? `${clinicSubdomain}.lvh.me:3001` : "API default: http://localhost:8080/api"}</p></div></section></main>;
+  return <main className="login-shell"><section className="login-story"><div className="brand-mark">K<span>+</span></div><p className="eyebrow light">KLINIC API LAB</p><h1>ทดสอบเส้นทางนัดหมาย<br />ตั้งแต่เปิดห้องจนถึงจองคิว</h1><p>เว็บสำหรับตรวจ API จริงของ Doctor, Room, Patient และ Appointment แบบเห็นผลลัพธ์ทุกขั้นตอน</p><div className="flow-preview">{["สร้างห้อง", "ลงเวรหมอ", "เพิ่มคนไข้", "สร้างนัด"].map((item, index) => <div key={item}><b>{index + 1}</b><span>{item}</span></div>)}</div></section><section className="login-panel"><div className="login-card"><nav className="login-flow-menu" aria-label="เลือก flow ทดสอบ"><span className="active">Clinic Login</span><a href="/activation">Owner Activation Test</a></nav><p className="eyebrow">CLINIC WORKSPACE</p><h2>เข้าสู่ระบบทดสอบ</h2>{clinicSubdomain ? <p className="tenant-host-badge"><span /> {directory?.organizationName ?? "Clinic Group"}: <b>{clinicSubdomain}</b></p> : <p className="muted">กรอก Clinic code สำหรับ development</p>}<form onSubmit={onSubmit} method="post" className="form-stack">{!clinicSubdomain && <label>Clinic code<input name="clinicCode" defaultValue="CLINIC-0001" required /></label>}{clinicSubdomain && <label>สาขาที่ต้องการเข้า<select name="clinicId" required disabled={directoryLoading || !directory}><option value="">{directoryLoading ? "กำลังโหลดสาขา..." : "เลือกสาขา"}</option>{directory?.branches.map((branch) => <option key={branch.clinicId} value={branch.clinicId}>{branch.name} · {branch.code}</option>)}</select></label>}<label>Email<input name="email" type="email" autoComplete="username" defaultValue={localCredentials?.email ?? (clinicSubdomain ? "" : "owner@test.clinic")} required /></label><label>Password<input name="password" type="password" autoComplete="current-password" defaultValue={localCredentials?.password ?? (clinicSubdomain ? "" : "Test1234!")} required /></label><button className="primary-button" disabled={busy || Boolean(clinicSubdomain && (!directory || directoryLoading))}>{busy ? "กำลังเชื่อมต่อ..." : "เข้าสู่สาขาที่เลือก"}</button><button type="submit" value="owner" formNoValidate className="secondary-button" disabled={busy}>เข้าสู่หน้าจัดการองค์กรสำหรับ Owner</button></form>{directoryError && <div className="notice error">{directoryError}</div>}{notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}<p className="connection-hint"><span /> {clinicSubdomain ? `${clinicSubdomain}.lvh.me:3001` : "API default: http://localhost:8080/api"}</p></div></section></main>;
 }
 
 function PanelHeading({ icon, tone, step, title, trailing }: { icon: string; tone: string; step: string; title: string; trailing?: React.ReactNode }) {
